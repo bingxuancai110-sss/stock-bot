@@ -13,12 +13,11 @@ def text(value, size="sm", color=NAVY, **options):
 def quote_footer(rows):
     stamps, sources = [], []
     unknown = False
-    for _, _, _, _, note, _ in rows:
+    for row in rows:
+        note = row[4] if len(row) > 4 else ""
         stamp, _, source = note.partition(" · ")
         try:
             parsed = datetime.fromisoformat(stamp.replace("/", "-").replace("Z", "+00:00"))
-            if len(stamp) < 16:
-                raise ValueError("missing time")
             if parsed.tzinfo:
                 parsed = parsed.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
             stamps.append(parsed)
@@ -28,10 +27,16 @@ def quote_footer(rows):
             sources.append(source)
     if stamps:
         first, last = min(stamps), max(stamps)
-        date_text = first.strftime("%Y-%m-%d %H:%M:%S")
-        if last != first:
+        if first.time() == datetime.min.time() and last.time() == datetime.min.time():
+            date_text = "最近收盤日 " + first.strftime("%Y-%m-%d")
+            if last.date() != first.date():
+                date_text += "–" + last.strftime("%Y-%m-%d")
+        else:
+            date_text = first.strftime("%Y-%m-%d %H:%M:%S")
+        if last != first and first.time() != datetime.min.time():
             date_text += "–" + last.strftime("%H:%M:%S" if first.date() == last.date() else "%Y-%m-%d %H:%M:%S")
-        timing = "行情時間 " + date_text + ("；部分時間未提供" if unknown else "")
+        timing = (date_text if date_text.startswith("最近收盤日 ") else "行情時間 " + date_text)
+        timing += "；部分時間未提供" if unknown else ""
     else:
         timing = "行情時間未提供"
     return [text(timing, "xxs", MUTED, wrap=True),
@@ -40,9 +45,13 @@ def quote_footer(rows):
 
 def render_holdings(rows):
     stocks = []
-    for i, (name, code, weight, pct, note, limit) in enumerate(rows):
+    for i, row in enumerate(rows):
+        name, code, weight, pct, note, limit = row[:6]
+        pct_label = row[6] if len(row) > 6 else "今日漲跌"
+        pct_date = row[7] if len(row) > 7 else None
         value = f"{pct:+.2f}%" if pct is not None else "待更新"
         color = "#D93025" if pct is not None and pct >= 0 else "#18845B" if pct is not None else MUTED
+        weight_text = f"{weight:.1f}%" if weight is not None else "待更新"
         # The caller supplies provider-price-based limit status, never a rounded % inference.
         if limit in LIMIT_COLORS and pct is not None:
             change = {"type": "box", "layout": "horizontal", "spacing": "xs", "flex": 0,
@@ -53,15 +62,19 @@ def render_holdings(rows):
             change = text(value, "sm", color, weight="bold", align="end", flex=0)
         track = {"type": "box", "layout": "horizontal", "height": "6px", "margin": "xs",
                  "backgroundColor": "#E9EEF3", "cornerRadius": "3px", "contents": [
-                     {"type": "box", "layout": "vertical", "width": f"{max(0, min(100, weight)):.1f}%",
+                      {"type": "box", "layout": "vertical", "width": f"{max(0, min(100, weight or 0)):.1f}%",
                       "height": "6px", "backgroundColor": "#2D8B92", "cornerRadius": "3px", "contents": []}]}
         content = [{"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
                     "contents": [text(f"{name}（{code}）", weight="bold", wrap=True, flex=1),
-                                 text(f"{weight:.1f}%", "md", weight="bold", align="end", flex=0)]},
+                                 text(weight_text, "md", color=NAVY if weight is not None else MUTED,
+                                      weight="bold", align="end", flex=0)]},
                    track,
                    {"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
-                    "margin": "xs", "contents": [text("今日漲跌", "xxs", MUTED, flex=1), change]}]
-        if pct is None:
+                    "margin": "xs", "contents": [text(pct_label, "xxs", MUTED, flex=1), change]}]
+        if pct_date:
+            note = f"資料截至 {pct_date} 收盤 · " + (note.partition(" · ")[2] or "最近可用行情")
+            content.append(text(note, "xxs", MUTED, wrap=True, margin="xs"))
+        elif pct is None:
             content.append(text("行情待更新 · " + note, "xxs", MUTED, wrap=True, margin="xs"))
         if i < len(rows) - 1:
             content.append({"type": "separator", "margin": "md", "color": "#E9EEF3"})
