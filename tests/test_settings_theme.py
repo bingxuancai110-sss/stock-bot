@@ -124,3 +124,11 @@ def test_all_theme_catalog_entries_have_account_palette_css():
         if key not in {'mist', 'warm', 'stone'}:
             assert f':root[data-ui-theme="{key}"]' in SOURCE
     assert 'repeat(auto-fit,minmax(180px,1fr))' in SOURCE
+
+
+def test_frontend_accepts_every_server_theme_key():
+    source = (Path('static/settings-theme.js')).read_text(encoding='utf-8')
+    match = re.search(r"var valid = \[(.*?)\];", source)
+    assert match
+    client_themes = set(re.findall(r"'([a-z]+)'", match.group(1)))
+    assert client_themes == set(THEMES)

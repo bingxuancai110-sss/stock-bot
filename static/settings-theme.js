@@ -3,7 +3,7 @@
   'use strict';
   if (window.StockBotThemeSettings) return;
   window.StockBotThemeSettings = true;
-  var valid = ['mist', 'warm', 'stone'];
+  var valid = ['mist', 'warm', 'stone', 'night', 'forest', 'sand', 'mono', 'ocean', 'plum', 'coral', 'mint'];
   var timeoutMs = 22000;
 
   function status(form, state, text) {
