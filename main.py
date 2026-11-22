@@ -2806,6 +2806,14 @@ WEB_UI_THEMES = {
     "mist": {"label": "霧藍灰", "description": "清爽穩定，延續目前的深藍主視覺。", "page": "#F1F4F7", "surface": "#FFFFFF", "soft": "#E9EEF2", "ink": "#243647", "muted": "#708092", "line": "#DCE3E9", "brand": "#244D68", "hero": "#244D68"},
     "warm": {"label": "暖白青綠", "description": "偏暖的底色搭配沉穩青綠。", "page": "#F5F3EE", "surface": "#FFFEFB", "soft": "#EBF1EC", "ink": "#2C3935", "muted": "#78827C", "line": "#E4E1D9", "brand": "#315F56", "hero": "#315F56"},
     "stone": {"label": "淺石墨藍", "description": "低彩度灰藍，俐落、安靜。", "page": "#EFF1F3", "surface": "#FFFFFF", "soft": "#E8EAED", "ink": "#29333D", "muted": "#737C86", "line": "#DDE1E5", "brand": "#354B60", "hero": "#354B60"},
+    "night": {"label": "夜間深色", "description": "深藍黑底與柔和淺字，夜間瀏覽更舒適。", "page": "#101821", "surface": "#182430", "soft": "#223340", "ink": "#E9F0F4", "muted": "#A6B5C0", "line": "#344653", "brand": "#78B5D0", "hero": "#21485D"},
+    "forest": {"label": "森林綠", "description": "柔和灰綠底搭配森林綠，安定自然。", "page": "#EEF2EB", "surface": "#FBFCF8", "soft": "#E2EADE", "ink": "#26382D", "muted": "#687A6D", "line": "#D6DFD3", "brand": "#315F46", "hero": "#315F46"},
+    "sand": {"label": "暖沙金", "description": "奶油暖白與焦糖棕，溫潤而沉穩。", "page": "#F4EFE5", "surface": "#FFFDF8", "soft": "#EBE2D2", "ink": "#3D352A", "muted": "#817361", "line": "#E3D8C6", "brand": "#80613B", "hero": "#735633"},
+    "mono": {"label": "極簡黑白", "description": "黑白灰低干擾配色，聚焦資訊與數字。", "page": "#F1F1F1", "surface": "#FFFFFF", "soft": "#E7E7E7", "ink": "#222222", "muted": "#676767", "line": "#D5D5D5", "brand": "#292929", "hero": "#292929"},
+    "ocean": {"label": "海洋藍", "description": "深海藍綠與清透底色，冷靜俐落。", "page": "#EDF4F6", "surface": "#FBFEFF", "soft": "#DFEBEF", "ink": "#20343D", "muted": "#63777F", "line": "#D2E0E4", "brand": "#17677A", "hero": "#165166"},
+    "plum": {"label": "葡萄紫", "description": "低彩灰紫調，優雅沉靜且有辨識度。", "page": "#F1EFF5", "surface": "#FDFCFF", "soft": "#E7E2EE", "ink": "#302C39", "muted": "#777184", "line": "#DDD8E6", "brand": "#65517C", "hero": "#544267"},
+    "coral": {"label": "日落珊瑚", "description": "暖陶土主色帶來柔和明亮的活力。", "page": "#FBF0EB", "surface": "#FFFDFA", "soft": "#F2E1D9", "ink": "#3E302C", "muted": "#826F69", "line": "#EAD7CF", "brand": "#B95843", "hero": "#8B4639"},
+    "mint": {"label": "薄荷青", "description": "淡薄荷底與青瓷色，清新舒適。", "page": "#EDF4F1", "surface": "#FBFEFA", "soft": "#E0ECE7", "ink": "#233833", "muted": "#657A73", "line": "#D2E0D9", "brand": "#32756A", "hero": "#265F57"},
 }
 
 
@@ -26419,6 +26427,78 @@ USER_UI_THEME_CSS = r'''
   --ui-blue:#354B60 !important; --ui-blue-strong:#354B60 !important; --ui-blue-soft:#E8EAED !important;
   --brass:#354B60 !important; --hero:#354B60 !important; --hero-soft:#687E92 !important;
 }
+:root[data-ui-theme="night"] {
+  color-scheme:dark;
+  --ui-page:#101821 !important; --paper:#101821 !important; --paper-2:#223340 !important;
+  --ui-surface:#182430 !important; --card:#182430 !important; --ui-surface-soft:#223340 !important;
+  --ui-ink:#E9F0F4 !important; --ink:#E9F0F4 !important; --ink-soft:#C0CDD5 !important; --ink-faint:#A6B5C0 !important;
+  --ui-line:#344653 !important; --rule:#344653 !important; --sep:#465965 !important;
+  --ui-blue:#78B5D0 !important; --ui-blue-strong:#78B5D0 !important; --ui-blue-soft:#223340 !important;
+  --brass:#78B5D0 !important; --hero:#21485D !important; --hero-soft:#456B7D !important;
+}
+:root[data-ui-theme="forest"] {
+  color-scheme:light;
+  --ui-page:#EEF2EB !important; --paper:#EEF2EB !important; --paper-2:#E2EADE !important;
+  --ui-surface:#FBFCF8 !important; --card:#FBFCF8 !important; --ui-surface-soft:#E2EADE !important;
+  --ui-ink:#26382D !important; --ink:#26382D !important; --ink-soft:#526257 !important; --ink-faint:#687A6D !important;
+  --ui-line:#D6DFD3 !important; --rule:#D6DFD3 !important; --sep:#E3E9E0 !important;
+  --ui-blue:#315F46 !important; --ui-blue-strong:#315F46 !important; --ui-blue-soft:#E2EADE !important;
+  --brass:#315F46 !important; --hero:#315F46 !important; --hero-soft:#4E7960 !important;
+}
+:root[data-ui-theme="sand"] {
+  color-scheme:light;
+  --ui-page:#F4EFE5 !important; --paper:#F4EFE5 !important; --paper-2:#EBE2D2 !important;
+  --ui-surface:#FFFDF8 !important; --card:#FFFDF8 !important; --ui-surface-soft:#EBE2D2 !important;
+  --ui-ink:#3D352A !important; --ink:#3D352A !important; --ink-soft:#615646 !important; --ink-faint:#817361 !important;
+  --ui-line:#E3D8C6 !important; --rule:#E3D8C6 !important; --sep:#ECE4D7 !important;
+  --ui-blue:#80613B !important; --ui-blue-strong:#80613B !important; --ui-blue-soft:#EBE2D2 !important;
+  --brass:#80613B !important; --hero:#735633 !important; --hero-soft:#967B57 !important;
+}
+:root[data-ui-theme="mono"] {
+  color-scheme:light;
+  --ui-page:#F1F1F1 !important; --paper:#F1F1F1 !important; --paper-2:#E7E7E7 !important;
+  --ui-surface:#FFFFFF !important; --card:#FFFFFF !important; --ui-surface-soft:#E7E7E7 !important;
+  --ui-ink:#222222 !important; --ink:#222222 !important; --ink-soft:#4D4D4D !important; --ink-faint:#676767 !important;
+  --ui-line:#D5D5D5 !important; --rule:#D5D5D5 !important; --sep:#E6E6E6 !important;
+  --ui-blue:#292929 !important; --ui-blue-strong:#292929 !important; --ui-blue-soft:#E7E7E7 !important;
+  --brass:#292929 !important; --hero:#292929 !important; --hero-soft:#555555 !important;
+}
+:root[data-ui-theme="ocean"] {
+  color-scheme:light;
+  --ui-page:#EDF4F6 !important; --paper:#EDF4F6 !important; --paper-2:#DFEBEF !important;
+  --ui-surface:#FBFEFF !important; --card:#FBFEFF !important; --ui-surface-soft:#DFEBEF !important;
+  --ui-ink:#20343D !important; --ink:#20343D !important; --ink-soft:#4D626A !important; --ink-faint:#63777F !important;
+  --ui-line:#D2E0E4 !important; --rule:#D2E0E4 !important; --sep:#E3ECEF !important;
+  --ui-blue:#17677A !important; --ui-blue-strong:#17677A !important; --ui-blue-soft:#DFEBEF !important;
+  --brass:#17677A !important; --hero:#165166 !important; --hero-soft:#39778A !important;
+}
+:root[data-ui-theme="plum"] {
+  color-scheme:light;
+  --ui-page:#F1EFF5 !important; --paper:#F1EFF5 !important; --paper-2:#E7E2EE !important;
+  --ui-surface:#FDFCFF !important; --card:#FDFCFF !important; --ui-surface-soft:#E7E2EE !important;
+  --ui-ink:#302C39 !important; --ink:#302C39 !important; --ink-soft:#595364 !important; --ink-faint:#777184 !important;
+  --ui-line:#DDD8E6 !important; --rule:#DDD8E6 !important; --sep:#EAE7EF !important;
+  --ui-blue:#65517C !important; --ui-blue-strong:#65517C !important; --ui-blue-soft:#E7E2EE !important;
+  --brass:#65517C !important; --hero:#544267 !important; --hero-soft:#7A6990 !important;
+}
+:root[data-ui-theme="coral"] {
+  color-scheme:light;
+  --ui-page:#FBF0EB !important; --paper:#FBF0EB !important; --paper-2:#F2E1D9 !important;
+  --ui-surface:#FFFDFA !important; --card:#FFFDFA !important; --ui-surface-soft:#F2E1D9 !important;
+  --ui-ink:#3E302C !important; --ink:#3E302C !important; --ink-soft:#695751 !important; --ink-faint:#826F69 !important;
+  --ui-line:#EAD7CF !important; --rule:#EAD7CF !important; --sep:#F2E4DE !important;
+  --ui-blue:#B95843 !important; --ui-blue-strong:#B95843 !important; --ui-blue-soft:#F2E1D9 !important;
+  --brass:#B95843 !important; --hero:#8B4639 !important; --hero-soft:#B56657 !important;
+}
+:root[data-ui-theme="mint"] {
+  color-scheme:light;
+  --ui-page:#EDF4F1 !important; --paper:#EDF4F1 !important; --paper-2:#E0ECE7 !important;
+  --ui-surface:#FBFEFA !important; --card:#FBFEFA !important; --ui-surface-soft:#E0ECE7 !important;
+  --ui-ink:#233833 !important; --ink:#233833 !important; --ink-soft:#4D625B !important; --ink-faint:#657A73 !important;
+  --ui-line:#D2E0D9 !important; --rule:#D2E0D9 !important; --sep:#E3ECE7 !important;
+  --ui-blue:#32756A !important; --ui-blue-strong:#32756A !important; --ui-blue-soft:#E0ECE7 !important;
+  --brass:#32756A !important; --hero:#265F57 !important; --hero-soft:#46847A !important;
+}
 html[data-ui-theme] { min-height:100%; background:var(--ui-page) !important; }
 html[data-ui-theme] body:not(.auth-entry-page) { background:var(--ui-page) !important; color:var(--ui-ink) !important; }
 html[data-ui-theme] body:not(.auth-entry-page) .app-header {
@@ -40185,7 +40265,7 @@ def web_settings(uid):
         if action == "save_ui_theme":
             selected = (request.form.get("ui_theme") or "").strip()
             if selected not in WEB_UI_THEMES:
-                msg = "請選擇有效的首頁配色。"
+                msg = "請選擇有效的網站配色。"
             elif save_web_ui_theme(uid, selected):
                 msg = f"配色已儲存：{WEB_UI_THEMES[selected]['label']}。"
             else:
@@ -40223,7 +40303,7 @@ def web_settings(uid):
 .settings-panel p{{margin:0;color:var(--ink-soft,#596257);font-size:13px;line-height:1.85}}
 .settings-panel .settings-admin-link{{display:block;margin-top:13px;padding:12px 14px;border:1px solid #d8d7cc;border-radius:8px;background:#f5f4ee;color:#334737;text-decoration:none;font-size:13px;font-weight:800;text-align:center}}
 .settings-muted{{font-size:12px!important;color:var(--ink-faint,#72766c)!important}}
-.settings-theme-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}}
+.settings-theme-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-top:14px}}
 .settings-theme-option{{display:block;cursor:pointer;min-width:0}}
 .settings-theme-option>input{{position:absolute;opacity:0;pointer-events:none}}
 .settings-theme-option>input:focus-visible+.settings-theme-option-card{{outline:3px solid color-mix(in srgb,var(--brass) 28%,transparent);outline-offset:2px}}
@@ -40240,7 +40320,7 @@ def web_settings(uid):
   {f'<div class="msg">{html.escape(msg)}</div>' if msg else ''}
   <section class="settings-panel" id="appearance">
     <div class="settings-panel-kicker">個人化外觀</div>
-    <h2>首頁配色</h2>
+    <h2>網站配色</h2>
     <p>選擇你喜歡的色調，套用到網站各頁。這項偏好會跟著你的帳號保存。</p>
     <form method="post" action="/web/settings#appearance" data-settings-theme-form>{csrf_hidden_input()}<input type="hidden" name="action" value="save_ui_theme">
       <div class="settings-theme-grid">{theme_options_html}</div>

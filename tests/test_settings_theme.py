@@ -113,3 +113,14 @@ def test_commit_failure_or_missing_returning_row_never_acknowledged():
 def test_effective_default_only_when_database_read_succeeds_without_profile():
     conn=MagicMock();conn.cursor.return_value.__enter__.return_value.fetchone.return_value=None
     assert ThemeStore(lambda:conn,lambda c:None,THEMES).read('owner') == 'mist'
+
+
+def test_all_theme_catalog_entries_have_account_palette_css():
+    assert len(THEMES) == 11
+    for key, theme in THEMES.items():
+        assert theme['label'] and theme['description']
+        for color_key in ('page', 'surface', 'soft', 'ink', 'muted', 'line', 'brand', 'hero'):
+            assert re.fullmatch(r'#[0-9A-Fa-f]{6}', theme[color_key])
+        if key not in {'mist', 'warm', 'stone'}:
+            assert f':root[data-ui-theme="{key}"]' in SOURCE
+    assert 'repeat(auto-fit,minmax(180px,1fr))' in SOURCE
