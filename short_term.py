@@ -32,6 +32,10 @@ def price_band(price):
     return '1000以上' if price>=1000 else '500–999' if price>=500 else '100–499' if price>=100 else '低於100'
 
 
+def display_price(row):
+    return number((row.get('display_quote') or {}).get('price', row.get('price')))
+
+
 def clarity_rank(row):
     stage=row.get('signal_stage','watch')
     # JSON persistence turns tuples into lists. A partial market pass mixes
@@ -675,12 +679,14 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None
 
 class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
-                 calendar=None, light=None, category=None, memory_reserve_mb=40):
+                 calendar=None, light=None, category=None, memory_reserve_mb=40,
+                 market_quotes=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
         self.calendar=calendar or (lambda d:d.weekday()<5)
         self.light=light;self.category=category or (lambda code,industry:'未分類')
+        self.market_quotes = market_quotes
         self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
@@ -828,6 +834,12 @@ class ShortTermService:
             short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in set(queue)}
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
+            official = {}
+            if codes and self.market_quotes:
+                try:
+                    official = self.market_quotes(codes, self.stock_meta, intraday) or {}
+                except Exception as exc:
+                    print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
             pause='';time_exhausted=False
             for i,code in enumerate(codes):
                 if time.monotonic()>self.deadline:
@@ -857,11 +869,13 @@ class ShortTermService:
                     from short_side import analyse as analyse_short
                     short_row=analyse_short(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
                     if short_row:
+                        short_row['market_quote'] = official.get(code)
                         short_row.update(sector=(self.stock_meta.get(code) or {}).get('sector','未分類'),market=(self.stock_meta.get(code) or {}).get('market','未確認'),observed_at=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None,computed_at=self.now().isoformat())
                         short_by_code[code]=short_row
                     else:short_by_code.pop(code,None)
                     row=analyse(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
                     if row:
+                        row['market_quote'] = official.get(code)
                         row['sector']=(self.stock_meta.get(code) or {}).get('sector','未分類')
                         row['market']=(self.stock_meta.get(code) or {}).get('market','未確認')
                         row['observed_at']=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None
@@ -968,6 +982,12 @@ class ShortTermService:
             for row in saved_rows:
                 row=dict(row,signals=signal_allocations(row.get('signals',[])),
                     spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date'),direction=direction))
+                market_quote = row.pop('market_quote', None) or {}
+                if (market_quote.get('date', '') >= (row.get('date') or '') and
+                        (not intraday or not market_quote.get('final'))):
+                    row['display_quote'] = market_quote
+                else:
+                    row['display_quote'] = {}
                 if direction=='short':
                     labels={'entry':'首次放空100%','add':'加空首次股數50%','reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
                     for event in row['signals']:
@@ -1000,13 +1020,13 @@ class ShortTermService:
             sort=sort if sort in ('price_desc','price_asc') else 'signal'
             if price_range in ranges:
                 lo,hi=ranges[price_range]
-                rows=[r for r in rows if number(r.get('price')) is not None and lo<=number(r['price'])<hi]
+                rows=[r for r in rows if display_price(r) is not None and lo<=display_price(r)<hi]
                 alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             position_counts={g:sum(position_group(r)==g for r in rows) for g in ('held','waiting','closed','unknown')}
             for row in rows:row['position_group']=position_group(row)
             if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
-            rows.sort(key=(lambda r:(number(r.get('price')) is None, (-1 if sort=='price_desc' else 1)*(number(r.get('price')) or 0),r['code'])) if sort!='signal' else clarity_rank)
+            rows.sort(key=(lambda r:(display_price(r) is None, (-1 if sort=='price_desc' else 1)*(display_price(r) or 0),r['code'])) if sort!='signal' else clarity_rank)
             total=len(rows)
             recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
             for row in rows:
