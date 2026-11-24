@@ -10194,7 +10194,7 @@ REALTIME_CACHE_SECONDS = max(30, int(os.environ.get("REALTIME_CACHE_SECONDS", "3
 # A cache TTL alone is not a memory bound: a market-wide scan can add thousands
 # of fresh, long-history rows before any of them expire. Keep the web worker's
 # quote cache to a strict LRU ceiling on Render's 512 MiB instance.
-REALTIME_CACHE_MAX_ITEMS = max(128, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "240")))
+REALTIME_CACHE_MAX_ITEMS = min(96, max(48, int(os.environ.get("REALTIME_CACHE_MAX_ITEMS", "96"))))
 
 
 def _store_realtime_cache(cache_key, data, at=None):
@@ -10698,13 +10698,15 @@ def _fetch_yahoo_intraday_backup_quotes(codes, market_suffix=None, max_age_minut
 
 
 def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
-                       official_quote=None, include_mis=True, request_timeout=8):
+                       official_quote=None, include_mis=True, request_timeout=8,
+                       cache_result=True):
     """
     rng 是 Yahoo 的資料區間。預設 3mo 足夠算位階與均線；
     持股頁要畫「買進點」時才改用 1y——持有超過三個月的部位，
     用 3mo 的序列根本涵蓋不到買進日，圖上就只能寫「買進日不在此區間內」，
     而那正是這張圖唯一比券商 App 多給的東西。
     只有需要的頁面才付這個成本，選股台掃上百檔時仍用 3mo。
+    全市場背景掃描可設 cache_result=False，避免長歷史報價常駐網頁服務。
     """
     code = str(code).strip()
     stock_name = STOCK_NAME_MAP.get(code, code)
@@ -10762,7 +10764,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 if closes and close_dates and close_dates[-1] == taiwan_today():
                     closes[-1] = official_close
                     refreshed["closes"] = closes
-                _store_realtime_cache(cache_key, refreshed, at=now)
+                if cache_result:
+                    _store_realtime_cache(cache_key, refreshed, at=now)
                 return refreshed
             if official_quote is None:
                 return cached["data"]
@@ -11113,7 +11116,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
                 # 與 close 相同，不需要再調整。
                 "adj_closes": [b[5] for b in hist] + [float(close)],
             }
-            _store_realtime_cache(cache_key, result, at=now)
+            if cache_result:
+                _store_realtime_cache(cache_key, result, at=now)
             return result
         except Exception:
             continue
@@ -11122,7 +11126,8 @@ def get_realtime_stock(code, rng="3mo", market_suffix=None, force_refresh=False,
 
 def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
                              force_refresh=False, mis_force=None, skip_mis=False,
-                             request_timeout=8, quote_overrides=None):
+                             request_timeout=8, quote_overrides=None,
+                             cache_result=True):
     """
     並行抓多檔報價，回傳 {code: data 或 None}。
 
@@ -11169,7 +11174,7 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
             codes[0], rng, market_suffix=suffix_for(codes[0]),
             force_refresh=force_refresh,
             official_quote=official_quotes.get(codes[0]), include_mis=not skip_mis,
-            request_timeout=request_timeout)}
+            request_timeout=request_timeout, cache_result=cache_result)}
 
     def safe_fetch(c):
         # 單檔失敗不能拖垮整批，一律吞掉例外回 None，交由呼叫端顯示「查無行情」
@@ -11178,7 +11183,7 @@ def get_realtime_stocks_bulk(codes, workers=12, rng="3mo", market_suffix=None,
                 c, rng, market_suffix=suffix_for(c),
                 force_refresh=force_refresh,
                 official_quote=official_quotes.get(c), include_mis=not skip_mis,
-                request_timeout=request_timeout)
+                request_timeout=request_timeout, cache_result=cache_result)
         except Exception as e:
             print(f"⚠️ 並行抓取失敗 {c}: {e}")
             return None
@@ -11207,7 +11212,7 @@ RADAR_DEEP_SCAN_LIMIT = 240
 RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 240
 RADAR_PRICE_BATCH_SIZE = 4
 RADAR_SCAN_POLICY_VERSION = 3
-RADAR_LIGHT_SCAN_RESERVE_MB = 96  # four-symbol batches, two quote workers; rechecked before every batch
+RADAR_LIGHT_SCAN_RESERVE_MB = 40  # bounded single-process scans; rechecked between small batches
 
 
 def _reclaim_market_scan_memory():
@@ -22265,7 +22270,8 @@ def _do_warmup():
     # 收盤後 warmup 強制刷新；其他時段只讀有效快照，避免重複做五組分類查詢。
     try:
         chips_result = _guarded_background_stage("籌碼超人", lambda: build_chips_payload(
-            force_refresh=taiwan_now().hour >= 16, persist=True))
+            force_refresh=taiwan_now().hour >= 16, persist=True),
+            reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB)
         chips_payload = chips_result.get("payload") or {}
         chips_state = ("資料日 " + str(chips_result.get("data_date"))
                        if chips_result.get("data_date") else "資料不足")
@@ -46986,7 +46992,8 @@ def _iter_screener_pool_prices(pool, mode, workers, market_map, force_refresh):
             [code for code, _info in batch],
             workers=min(2, workers),
             rng="3mo", market_suffix=market_map or None,
-            force_refresh=force_refresh or mode == "radar", **options)
+            force_refresh=force_refresh or mode == "radar",
+            cache_result=False, **options)
         for code, info in batch:
             yield code, info, prices.get(code)
         del prices
@@ -47418,7 +47425,7 @@ def _start_screener_background_refresh(mode, intraday=False,
         requested_limit = RADAR_SCHEDULED_DEEP_SCAN_LIMIT if radar_deep_limit is None else int(radar_deep_limit)
         radar_deep_limit = max(4, min(requested_limit, RADAR_DEEP_SCAN_LIMIT))
     light_radar = mode == "radar"
-    reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB  # both now use 4-symbol/2-worker batches
+    reserve_mb = RADAR_LIGHT_SCAN_RESERVE_MB
     with _SCREENER_REFRESH_LOCK:
         failure = _SCREENER_REFRESH_ERRORS.get(mode)
         if failure and time.monotonic() - failure < 60:
@@ -55228,6 +55235,7 @@ _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
+    memory_reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
