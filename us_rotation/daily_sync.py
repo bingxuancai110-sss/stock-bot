@@ -13,17 +13,21 @@ RISK_SYMBOLS = {"^VIX", "HYG", "IEF", "^GSPC"}
 MAX_BYTES = 2 * 1024 * 1024
 
 
+def closing_cutoff(now=None):
+    now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
+    return now.date() if now.hour >= 17 else now.date() - timedelta(days=1)
+
+
 def encode_closed_history(histories, now=None):
     """Exclude today's US session until after its daily close; preserve real OHLCV."""
-    now = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/New_York"))
-    cutoff = now.date() if now.hour >= 17 else now.date() - timedelta(days=1)
+    cutoff = closing_cutoff(now).isoformat()
     out = StringIO()
     fields = ["symbol", "trade_date", "open", "high", "low", "close", "adjusted_close", "volume"]
     writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
     for symbol, rows in histories.items():
         for row in rows:
-            if str(row["trade_date"]) <= cutoff.isoformat():
+            if str(row["trade_date"]) <= cutoff:
                 writer.writerow({**row, "symbol": symbol})
     text = out.getvalue()
     parsed, _ = parse_history_csv(text)
