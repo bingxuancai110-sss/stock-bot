@@ -47624,6 +47624,7 @@ def cron_short_term_live():
             state, progress, total, meta.get("error") or ""), flush=True)
     return jsonify(ok=True, state=state, building=building, complete=complete,
                    progress=progress, total=total, date=meta.get("date"),
+                   memory_retry_at=meta.get("memory_retry_at"),
                    generated_at=meta.get("generated_at"), direction_counts=meta.get("direction_counts", {}),
                    confirmed=meta.get("total", 0)-counts.get("unknown", 0),
                    pending=counts.get("unknown", 0), failed=meta.get("failed", 0),

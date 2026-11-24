@@ -18,6 +18,11 @@ MAX_POOL = 24
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
+MEMORY_RETRY_MINUTES = (2, 4, 8)
+
+
+class ScanMemoryDeferred(RuntimeError):
+    """The shared worker needs to leave memory available for web requests."""
 
 
 def position_group(row):
@@ -741,6 +746,9 @@ class ShortTermService:
         self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
+        self.memory_retry_session = None
+        self.memory_retry_attempt = 0
+        self.memory_retry_at = None
         self.cache_mode=None;self.radar_at=None;self.trigger='頁面補檢';self.full_queue=[]
 
     def intraday(self):
@@ -750,6 +758,38 @@ class ShortTermService:
     def scan_reserve(self, intraday):
         # The intraday scan works in small batches and checks between symbols.
         return min(self.memory_reserve_mb, 96) if intraday else self.memory_reserve_mb
+
+    def in_retry_window(self, session):
+        today, intraday = session
+        now = self.now()
+        return (day(now) == today and self.intraday() == intraday and
+                (intraday or (14 <= now.hour < 21 and self.calendar(now.date()))))
+
+    def defer_for_memory(self, session):
+        if self.memory_retry_session != session:
+            self.memory_retry_session = session
+            self.memory_retry_attempt = 0
+            self.memory_retry_at = None
+        self.error = '記憶體餘裕不足，保留上次保存的進度'
+        if self.memory_retry_at or not self.in_retry_window(session):
+            return
+        minutes = MEMORY_RETRY_MINUTES[min(self.memory_retry_attempt, len(MEMORY_RETRY_MINUTES) - 1)]
+        retry_at = self.now() + timedelta(minutes=minutes)
+        self.memory_retry_at = retry_at
+        self.memory_retry_attempt += 1
+        self.error += f'，{minutes} 分鐘後自動重試'
+        timer = threading.Timer(minutes * 60, self.retry_after_memory, args=(session, retry_at))
+        timer.daemon = True
+        timer.start()
+        print(f'短線記憶體暫緩，預計 {retry_at.isoformat()} 續掃', flush=True)
+
+    def retry_after_memory(self, session, retry_at):
+        with self.lock:
+            if self.memory_retry_session != session or self.memory_retry_at != retry_at:
+                return
+            self.memory_retry_at = None
+            if self.in_retry_window(session) and not self.running:
+                self.payload(refresh=True, quote_only=True)
 
     def refresh_card_quotes(self, session, stocks):
         trading_day, intraday = session
@@ -837,7 +877,7 @@ class ShortTermService:
             if time.monotonic()>self.deadline:
                 raise RuntimeError('全市場技術行情回應逾時；保留原結果，稍後可重試')
             if not self.safe(reserve_mb=self.scan_reserve(self.intraday())):
-                raise RuntimeError('全市場初篩因記憶體餘裕不足暫停')
+                raise ScanMemoryDeferred('全市場初篩因記憶體餘裕不足暫停')
             batch=universe[offset:offset+LIGHT_BATCH]
             quotes=self.light(batch,{c:self.stock_meta[c]['market'] for c in batch}) or {}
             for code in batch:
@@ -902,12 +942,16 @@ class ShortTermService:
 
     def build(self):
         queued=False
+        memory_deferred = False
+        intraday = self.intraday()
+        session = (day(self.now()), intraday)
         try:
             with self.lock:self.running=True
-            intraday=self.intraday();snapshot_key=KEY+(':intraday' if intraday else '')
+            snapshot_key=KEY+(':intraday' if intraday else '')
             self.deadline=time.monotonic()+120
             reserve = self.scan_reserve(intraday)
-            if not self.safe(reserve_mb=reserve):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
+            if not self.safe(reserve_mb=reserve):
+                raise ScanMemoryDeferred('記憶體餘裕不足，已保留掃描進度')
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
@@ -949,6 +993,7 @@ class ShortTermService:
                 if time.monotonic()>self.deadline:
                     pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
                 if not self.safe(reserve_mb=reserve):
+                    memory_deferred = True
                     pause='記憶體餘裕不足，進度已保存';break
                 try:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
@@ -1033,17 +1078,29 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
-            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=reserve) and self.intraday()==intraday and day(self.now())==cycle['day']):
-                queued=True
-                try:self.executor.submit(self.build)
-                except Exception:
-                    queued=False;self.error='背景佇列暫緩，掃描進度已保存'
+            if (not complete and (not pause or time_exhausted) and
+                    self.intraday() == intraday and day(self.now()) == cycle['day']):
+                if self.safe(reserve_mb=reserve):
+                    queued=True
+                    try:self.executor.submit(self.build)
+                    except Exception:
+                        queued=False;self.error='背景佇列暫緩，掃描進度已保存'
+                else:
+                    memory_deferred = True
+            if complete:
+                with self.lock:
+                    self.memory_retry_attempt = 0
+        except ScanMemoryDeferred:
+            memory_deferred = True
         except Exception as exc:
             with self.lock:self.error=str(exc)[:160]
             print('⚠️ 短線研究暫緩: '+str(exc)[:160],flush=True)
         finally:
             if not queued:
-                with self.lock:self.running=False
+                with self.lock:
+                    self.running=False
+                    if memory_deferred:
+                        self.defer_for_memory(session)
 
     def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False):
         with self.lock:
@@ -1075,7 +1132,9 @@ class ShortTermService:
             # scheduler or an explicit refresh may start the shared producer.
             cycle=(cached or {}).get('cycle') or {}
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
-            if (refresh or schedule and (not cached or stale or unfinished)) and not self.running and time.monotonic()-self.last_try>60:
+            scan_session = (day(self.now()), intraday)
+            retry_pending = self.memory_retry_session == scan_session and self.memory_retry_at
+            if (refresh or schedule and (not cached or stale or unfinished)) and not retry_pending and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
                 if self.safe(reserve_mb=self.scan_reserve(intraday)):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
@@ -1084,7 +1143,7 @@ class ShortTermService:
                     except Exception:
                         self.running=False; self.error='背景佇列暫時無法接收，請稍後重試'
                 else:
-                    self.error='記憶體餘裕不足，稍後可重試'
+                    self.defer_for_memory(scan_session)
             if quote_only:
                 return
             signals_current=bool((cached or {}).get('date')==day(expected) and
@@ -1172,6 +1231,8 @@ class ShortTermService:
                 position_counts=position_counts,
                 intraday=intraday,refresh_interval_seconds=600,
                 next_refresh_at=(datetime.fromisoformat(generated)+timedelta(seconds=600)).isoformat() if generated and intraday else None,
+                memory_retry_at=(self.memory_retry_at.isoformat()
+                                 if self.memory_retry_session == scan_session and self.memory_retry_at else None),
                 trigger=(cached or {}).get('trigger'),radar_at=(cached or {}).get('radar_at'),
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
                 phase=self.phase,progress_total=self.progress_total,
