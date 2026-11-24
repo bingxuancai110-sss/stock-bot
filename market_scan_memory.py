@@ -22,7 +22,7 @@ def reclaim(namespace, now=None):
         wall = time.time()
         # These entries are replaceable quote/history or rendered-page caches.
         for key, lock_key, keep, ttl, clock in (
-            ('_realtime_cache', '_realtime_cache_lock', 128, namespace.get('REALTIME_CACHE_SECONDS', 300), wall),
+            ('_realtime_cache', '_realtime_cache_lock', 48, namespace.get('REALTIME_CACHE_SECONDS', 300), wall),
             ('_SHARED_SNAPSHOT_MEMORY_CACHE', '_SHARED_SNAPSHOT_MEMORY_LOCK', 8, namespace.get('_SHARED_SNAPSHOT_MEMORY_TTL', 300), stamp),
             ('_WEB_FRAGMENT_CACHE', '_WEB_FRAGMENT_CACHE_LOCK', 16, None, stamp),
             ('_PORTFOLIO_TREND_HTML_CACHE', '_PORTFOLIO_TREND_HTML_CACHE_LOCK', 8, None, stamp),
