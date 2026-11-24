@@ -7,6 +7,16 @@
  function esc(v){return String(v==null?'—':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
  function num(v){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:2});}
  function price(v){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});}
+ function cardQuote(row){
+  var quote=row.display_quote||{},official=quote.price!=null;
+  var value=official?quote.price:row.price,pct=official?quote.change_pct:row.change_pct;
+  var label=official?(quote.final?'正式收盤':'盤中成交'):'策略日 K';
+  var date=official?quote.date:row.date;
+  var stamp=date?date.slice(5).replace('-','/'):'';
+  if(official&&!quote.final&&quote.time)stamp+=' '+quote.time.slice(0,5);
+  var change=pct==null||!Number.isFinite(Number(pct))?'—':(Number(pct)>=0?'+':'')+Number(pct).toFixed(2)+'%';
+  return '<div class="st-quote"><strong>'+price(value)+'</strong><span class="'+(Number(pct)>=0?'st-up':'st-down')+'">'+change+'</span><span class="st-open-label" title="'+esc(official?quote.source:row.source)+'">'+esc(label+(stamp?' '+stamp:''))+'</span></div>';
+ }
  function sizing(e){var a=e&&e.allocation;if(!a)return '';return '<span class="st-sizing"><strong>'+esc(a.label)+'</strong><span>部位 '+num(a.before_pct)+'% → '+num(a.after_pct)+'%（首次股數為100%）</span></span>';}
  function currentSizing(r){if(r.current_action==='unconfirmed'||!r.latest_event)return '';return sizing((r.signals||[]).filter(function(e){return e.date===r.date&&e.type===r.latest_event;}).slice(-1)[0]);}
  function spreadText(v){if(v==null||!Number.isFinite(Number(v)))return '價差未確認';return Number(v)>0?'每股賺 NT$'+price(v):Number(v)<0?'每股賠 NT$'+price(-v):'每股價差 NT$0.00';}
@@ -89,10 +99,10 @@
   if(!rows.length){host.innerHTML=(s.data.meta||{}).building?'<div class="st-skeleton" aria-label="正在篩選候選"></div>':'<div class="st-empty"><b>'+(s.position==='held'?'目前沒有場內股票':s.position==='closed'?'目前沒有已出場股票':'目前沒有符合條件的股票')+'</b><p>可切換其他狀態查看。</p></div>';return;}
   var previous=null;
   host.innerHTML=rows.map(function(r){
-   var g=group(r),up=r.change_pct>=0,heading='';
+   var g=group(r),heading='';
    var es=(r.signals||[]).filter(function(e){return e.type==='entry'&&!e.provisional;}),entry=g==='held'?(r.active?r.entry:(es.slice(-1)[0]||{}).price):r.entry;
    var preview=(r.signals||[]).filter(function(e){return e.provisional;}).slice(-1)[0],stop=preview&&g==='held'?preview.stop:r.stop,target=preview&&g==='held'?preview.target:r.target;
-   return heading+'<article class="st-card" data-code="'+esc(r.code)+'" data-position="'+g+'"><button type="button" class="st-card-toggle" aria-expanded="'+(s.open===r.code)+'" aria-controls="st-detail-'+esc(r.code)+'"><div class="st-stock"><span class="st-state" data-position="'+g+'">'+esc(r.latest_event?((r.provisional?'暫定 · ':'')+names[r.latest_event]):g==='waiting'?(r.direction==='short'?'空方觀察':'多方觀察'):g==='held'?(r.direction==='short'?'空單在場':'多單在場'):g==='closed'?(r.direction==='short'?'已回補':'已出場'):groupNames[g])+'</span><h3>'+esc(r.name)+' <small>'+esc(r.code)+'</small></h3>'+ (r.strategy?'<span class="st-pattern-label">'+esc(r.pattern_label||strategyNames[s.shape||r.strategy]||'觀察')+'</span>':'')+(r.institutional_buying?'<span class="st-chip-badge" title="外資＋投信前五個已完成交易日淨買合計為正；僅供參考">法人同買</span>':'')+(r.direction==='short'&&r.institutional_selling?'<span class="st-chip-badge">法人同賣（參考）</span>':'')+'<span class="st-date">'+esc(concise(r))+'</span></div><div class="st-quote"><strong>'+price(r.price)+'</strong><span class="'+(up?'st-up':'st-down')+'">'+(up?'+':'')+Number(r.change_pct).toFixed(2)+'%</span></div></button>'+
+   return heading+'<article class="st-card" data-code="'+esc(r.code)+'" data-position="'+g+'"><button type="button" class="st-card-toggle" aria-expanded="'+(s.open===r.code)+'" aria-controls="st-detail-'+esc(r.code)+'"><div class="st-stock"><span class="st-state" data-position="'+g+'">'+esc(r.latest_event?((r.provisional?'暫定 · ':'')+names[r.latest_event]):g==='waiting'?(r.direction==='short'?'空方觀察':'多方觀察'):g==='held'?(r.direction==='short'?'空單在場':'多單在場'):g==='closed'?(r.direction==='short'?'已回補':'已出場'):groupNames[g])+'</span><h3>'+esc(r.name)+' <small>'+esc(r.code)+'</small></h3>'+ (r.strategy?'<span class="st-pattern-label">'+esc(r.pattern_label||strategyNames[s.shape||r.strategy]||'觀察')+'</span>':'')+(r.institutional_buying?'<span class="st-chip-badge" title="外資＋投信前五個已完成交易日淨買合計為正；僅供參考">法人同買</span>':'')+(r.direction==='short'&&r.institutional_selling?'<span class="st-chip-badge">法人同賣（參考）</span>':'')+'<span class="st-date">'+esc(concise(r))+'</span></div>'+cardQuote(r)+'</button>'+
    (r.provisional&&r.latest_event?'<div class="st-live-action">'+esc('盤中'+names[r.latest_event]+'待確認')+'</div>':'')+
    (g==='held'||(g==='waiting'&&r.entry_ready)?'<div class="st-levels"><div><span>'+(g==='held'?'進場價':'觀察價')+'</span><b>'+price(entry)+'</b></div><div><span>'+(g==='held'?'硬停損':'硬停損參考')+'</span><b class="st-down">'+price(stop)+'</b></div><div><span>'+(g==='held'?'停利':'停利參考')+'</span><b>'+price(target)+'</b></div></div>':g==='waiting'?'<p class="st-wait-reason">'+esc((r.pending||[]).slice(0,2).join(' · ')||'等待進場確認')+'</p>':'')+
    currentSizing(r)+compactSpread(r)+'<button type="button" class="st-expand" data-expand="'+esc(r.code)+'">'+(s.open===r.code?'收合 −':'K 線與進出場理由 ＋')+'</button><section class="st-detail" id="st-detail-'+esc(r.code)+'" '+(s.open===r.code?'':'hidden')+'></section></article>';

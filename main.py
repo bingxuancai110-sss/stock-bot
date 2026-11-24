@@ -28749,7 +28749,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/ui-feedback.js?v=20261119-2"></script>
 <script defer src="/static/app-experience.js?v=20261119-2"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261120-5">
-<script defer src="/static/short-term.js?v=20261120-6"></script>
+<script defer src="/static/short-term.js?v=20261124-1"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -55234,12 +55234,43 @@ def _verify_repaired_revenue(data):
     return result
 
 
+def _short_term_display_quotes(codes, stock_meta, intraday):
+    suffixes = {}
+    for code in codes:
+        market = str(stock_meta[code].get("market") or "").lower()
+        if market in ("上市", "twse", "listed", "tw"):
+            suffixes[code] = ".TW"
+        elif market in ("上櫃", "上柜", "tpex", "otc", "two"):
+            suffixes[code] = ".TWO"
+
+    now = taiwan_now()
+    if intraday:
+        quotes = _fetch_twse_mis_quotes(codes, market_suffix=suffixes,
+                                        cache_result=False, quick_mode=True)
+    else:
+        quotes = _fetch_official_daily_close_quotes(codes, market_suffix=suffixes, now=now)
+    result = {}
+    for code, item in quotes.items():
+        quote_date = _parse_official_close_trade_date(item.get("close_date"))
+        if (quote_date != now.date() or not item.get("close") or
+                not item.get("has_live_trade_price") or
+                bool(item.get("close_is_final")) == intraday):
+            continue
+        result[code] = {
+            "price": item["close"], "change_pct": item.get("pct"),
+            "date": quote_date.isoformat(), "time": item.get("close_time"),
+            "final": not intraday, "source": item.get("source"),
+        }
+    return result
+
+
 from short_term import ShortTermService, create_blueprint as create_short_term_blueprint
 _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
+    market_quotes=_short_term_display_quotes,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
