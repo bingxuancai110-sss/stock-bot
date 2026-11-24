@@ -215,6 +215,37 @@ html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-sh
 @media(min-width:1000px){#wb-short-term .st-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));max-width:none;align-items:start}#wb-short-term .st-card:has(.st-card-toggle[aria-expanded=true]){grid-column:1/-1}#wb-short-term .st-notices{max-width:none}#wb-short-term .st-detail{padding:22px}}
 @media(max-width:360px){#wb-short-term .st-card-toggle{padding:14px 12px 8px!important}#wb-short-term .st-detail{padding:12px}#wb-short-term .st-quote strong{font-size:20px}#wb-short-term .st-stock h3{font-size:17px}#wb-short-term .st-sector button{padding-left:9px!important;padding-right:9px!important}#wb-short-term .st-shape-filter{max-width:106px}#wb-short-term .st-state-tabs button{font-size:11px!important}}
 @media(prefers-reduced-motion:reduce){#wb-short-term .st-reveal{opacity:1!important;transform:none!important}#wb-short-term .st-detail-arrive .st-chart{animation:none!important}}
+
+#st-live-banner {
+  position: fixed;
+  z-index: 1200;
+  inset-block-start: max(12px, env(safe-area-inset-top));
+  inset-inline: 12px;
+  max-width: 440px;
+  margin-inline: auto;
+  display: flex;
+  align-items: center;
+  background: #172a37;
+  color: #fff;
+  border: 1px solid #ffffff40;
+  border-radius: 18px;
+  box-shadow: 0 8px 24px #14253245;
+  animation: st-banner-arrive 240ms cubic-bezier(.18,.72,.28,1) both;
+}
+#st-live-banner button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  min-height: 44px;
+}
+#st-live-banner .st-live-banner-main {flex: 1; min-width: 0; text-align: start; padding: 11px 14px;}
+#st-live-banner strong {display: block; font-size: 15px;}
+#st-live-banner span span {display: block; margin-top: 3px; color: #e0ebf2; font-size: 13px;}
+#st-live-banner .st-live-banner-close {font-size: 24px; inline-size: 44px; margin-inline-end: 4px;}
+@keyframes st-banner-arrive {from {opacity: 0; transform: translateY(-24px);} to {opacity: 1; transform: translateY(0);}}
+@media (prefers-reduced-motion: reduce) {#st-live-banner {animation: none;}}
 #wb-short-term .st-sizing{display:block;margin:10px 0;padding:10px 12px;border-inline-start:3px solid var(--st-accent,currentColor);background:var(--st-soft,rgba(100,120,130,.06));text-align:start;line-height:1.6}
 #wb-short-term .st-sizing>strong,#wb-short-term .st-sizing>span{display:block}
 #wb-short-term .st-sizing>strong{font-size:14px;font-weight:750}

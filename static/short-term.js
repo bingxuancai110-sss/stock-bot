@@ -24,6 +24,58 @@
  function spreadView(r){var p=r.spreads||{},trades=p.completed||[],last=trades[trades.length-1],out='';if(last){out+='<div class="st-profit"><span>'+(r.provisional&&last.exit_date===r.date?'含盤中暫定出場的每股價差':'已出場每股價差')+(trades.length>1?'（'+trades.length+' 次合計）':'')+'</span><strong class="'+spreadClass(p.total_closed_spread)+'">'+spreadText(p.total_closed_spread)+'</strong><small>上次 '+esc(last.entry_date)+' '+price(last.entry_price)+' → '+esc(last.exit_date)+' '+price(last.exit_price)+(trades.length>1?' · '+spreadText(last.spread):'')+'</small></div>';}if(p.open&&p.open.spread!=null){var o=p.open;out+='<div class="st-profit"><span>尚未出場 · 未實現每股價差</span><strong class="'+spreadClass(o.spread)+'">'+spreadText(o.spread)+'</strong><small>'+esc(o.entry_date)+' '+price(o.entry_price)+' → '+esc(o.date)+' '+price(o.price)+'</small></div>';}return out;}
  function api(refresh){var t=new URLSearchParams(location.search).get('t')||'';return '/web/api/workbench/short-term'+(refresh?'?refresh=1':'?read=1')+(t?'&t='+encodeURIComponent(t):'')+'&price_range='+encodeURIComponent(current&&current.priceRange||'all')+'&sort='+encodeURIComponent(current&&current.sort||'signal')+'&direction='+encodeURIComponent(current&&current.direction||'long')+(current&&current.sector?'&sector='+encodeURIComponent(current.sector):'')+(current&&current.position?'&position='+encodeURIComponent(current.position):'')+(current&&current.shape?'&shape='+encodeURIComponent(current.shape):'')+'&offset='+(current&&current.offset||0)+'&limit=20';}
  function alive(s){return current===s&&s.el.isConnected;}
+ var bannerTimer;
+ function dismissActionBanner(){
+  clearTimeout(bannerTimer);
+  var banner=document.getElementById('st-live-banner');
+  if(banner)banner.remove();
+ }
+ function announceActions(s,data){
+  var meta=data.meta||{},events=data.notifications||[];
+  if(s.el.hidden||document.hidden||!meta.intraday||!meta.signals_current||!meta.expected_date)return;
+  var storageKey='st-live-actions:'+meta.expected_date;
+  if(s.liveActionDay!==meta.expected_date){
+   s.liveActionDay=meta.expected_date;
+   s.seen=new Set();
+   try {
+    var saved=JSON.parse(sessionStorage.getItem('st-live-actions')||'null');
+    if(saved&&saved.key===storageKey)s.seen=new Set(saved.ids);
+   }catch(ignore){}
+   s.liveActionBaseline=false;
+  }
+  var fresh=events.filter(function(event){
+   if(event.date!==meta.expected_date||!Object.prototype.hasOwnProperty.call(names,event.type))return false;
+   var key=[event.direction,event.code,event.date,event.type].join('|');
+   if(s.seen.has(key))return false;
+   s.seen.add(key);
+   var age=Date.now()-Date.parse(event.observed_at);
+   return s.liveActionBaseline||(age>=-60000&&age<=180000);
+  });
+  s.liveActionBaseline=true;
+  try{sessionStorage.setItem('st-live-actions',JSON.stringify({key:storageKey,ids:Array.from(s.seen)}));}catch(ignore){}
+  if(!fresh.length)return;
+  dismissActionBanner();
+  var event=fresh[0],short=event.direction==='short';
+  var action=short?{entry:'放空',add:'加空',reduce:'部分回補',exit:'回補'}[event.type]:names[event.type];
+  var banner=document.createElement('aside');
+  banner.id='st-live-banner';
+  banner.innerHTML='<button type="button" class="st-live-banner-main"><span role="status"><strong>短線有新動作</strong><span>'+
+   esc(event.name)+' '+esc(event.code)+' · '+esc(action)+' · 盤中暫定'+
+   (fresh.length>1?' · 另 '+(fresh.length-1)+' 筆':'')+'</span></span></button>'+
+   '<button type="button" class="st-live-banner-close" aria-label="關閉短線通知">×</button>';
+  banner.querySelector('.st-live-banner-close').onclick=dismissActionBanner;
+  banner.querySelector('.st-live-banner-main').onclick=function(){
+   dismissActionBanner();
+   if(!alive(s)||s.el.hidden)return;
+   s.direction=short?'short':'long';
+   s.sector='';s.shape='';s.position='';s.priceRange='all';s.offset=0;s.open=null;s.viewChanged=true;
+   s.focusLiveActions=true;
+   if(s.loading)s.pending=true;
+   else load(s,false);
+  };
+  document.body.appendChild(banner);
+  bannerTimer=setTimeout(dismissActionBanner,9000);
+ }
  function notices(s){
   var meta=s.data.meta||{},date=meta.date||'未確認',valid=meta.signals_current===true;
   var alerts=valid?(s.data.alerts||[]):[],entries=alerts.filter(function(e){return e.type==='entry';});
@@ -199,9 +251,10 @@
   if(!alive(s))return;if(s.loading){if(force){s.pending=true;s.pendingForce=true;}return;}
   clearTimeout(s.timer);s.loading=true;var viewAtRequest=[s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|'),id=++s.request,controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},12000);
   var btn=s.el.querySelector('.st-refresh');if(btn){btn.disabled=true;btn.textContent='讀取中…';}
-  fetch(api(force),{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(!alive(s)||id!==s.request)return;if(viewAtRequest!==[s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|')){s.pending=true;return;}if(data.meta&&data.meta.offset!=null)s.offset=data.meta.offset;var changed=s.viewChanged||JSON.stringify(s.data)!==JSON.stringify(data);s.data=data;s.fetched=Date.now();if(changed)render(s);s.viewChanged=false;s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},data.meta&&data.meta.building?5000:30000);}).catch(function(e){if(alive(s)){s.data.meta=Object.assign({},s.data.meta,{building:false,error:e.name==='AbortError'?'讀取逾時，請重試；原結果保留':'暫時無法載入，請重試'});render(s);s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},15000);}}).finally(function(){clearTimeout(timeout);s.loading=false;if(s.pending&&alive(s)){s.pending=false;var force=s.pendingForce;s.pendingForce=false;load(s,force);return;}if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}});
+  fetch(api(force),{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(!alive(s)||id!==s.request)return;if(viewAtRequest!==[s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|')){s.pending=true;return;}if(data.meta&&data.meta.offset!=null)s.offset=data.meta.offset;var changed=s.viewChanged||JSON.stringify(s.data)!==JSON.stringify(data);s.data=data;s.fetched=Date.now();if(changed)render(s,s.focusLiveActions);announceActions(s,data);if(s.focusLiveActions){s.focusLiveActions=false;var actions=s.el.querySelector(".st-notices");if(actions){actions.tabIndex=-1;actions.focus({preventScroll:true});actions.scrollIntoView({block:"start"});}}s.viewChanged=false;s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},data.meta&&data.meta.building?5000:30000);}).catch(function(e){if(alive(s)){s.data.meta=Object.assign({},s.data.meta,{building:false,error:e.name==='AbortError'?'讀取逾時，請重試；原結果保留':'暫時無法載入，請重試'});render(s);s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},15000);}}).finally(function(){clearTimeout(timeout);s.loading=false;if(s.pending&&alive(s)){s.pending=false;var force=s.pendingForce;s.pendingForce=false;load(s,force);return;}if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}});
  }
  window.StockBotShortTerm={mount:function(el){if(current&&current.el===el){if(!current.loading&&!current.timer&&((current.data.meta||{}).building||Date.now()-(current.fetched||0)>30000))load(current,false);return;}current={el:el,data:{rows:[],meta:{building:true}},open:null,offset:0,direction:'long',priceRange:'all',sort:'signal',sector:'',shape:'',position:'',pending:false,history:false,range:60,end:null,event:null,request:0,loading:false,polls:0,timer:null,id:++sequence,seen:new Set()};try{var saved=JSON.parse(localStorage.getItem('st-price-view')||'{}');if(['all','under100','100to500','500to1000','1000plus'].includes(saved.priceRange))current.priceRange=saved.priceRange;if(['signal','price_desc','price_asc'].includes(saved.sort))current.sort=saved.sort;}catch(ignore){}render(current);load(current,false);},refresh:function(el){this.mount(el);current.polls=0;load(current,true);}};
- document.addEventListener('visibilitychange',function(){if(!document.hidden&&current&&!current.el.hidden&&!current.loading)load(current,false);});
+ document.addEventListener('stockbot:pageleaving',dismissActionBanner);
+ document.addEventListener('visibilitychange',function(){if(document.hidden)dismissActionBanner();else if(current&&!current.el.hidden&&!current.loading)load(current,false);});
  var panel=document.getElementById('wb-short-term');if(panel&&!panel.hidden)window.StockBotShortTerm.mount(panel);
 })();

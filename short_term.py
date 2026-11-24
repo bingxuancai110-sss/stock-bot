@@ -36,6 +36,53 @@ def display_price(row):
     return number((row.get('display_quote') or {}).get('price', row.get('price')))
 
 
+def with_official_live_bar(history, live, now):
+    """Use freshly traded exchange OHLC with the existing historical series."""
+    if not live or live.get('final') or live.get('date') != day(now):
+        return history
+    try:
+        stamp = datetime.fromisoformat(f"{live['date']}T{live['time']}").replace(tzinfo=now.tzinfo)
+    except (KeyError, TypeError, ValueError):
+        return history
+    if not -60 <= (now - stamp).total_seconds() <= 1200:
+        return history
+    columns = ('close_dates', 'opens', 'highs', 'lows', 'closes', 'volumes')
+    dates = history.get('close_dates') or []
+    if not dates or any(len(history.get(key) or []) != len(dates) for key in columns):
+        return history
+    o, h, l, c, v = (number(live.get(key)) for key in ('open', 'high', 'low', 'price', 'volume'))
+    if any(value is None for value in (o, h, l, c, v)) or not (0 < l <= min(o, c) <= max(o, c) <= h and v > 0):
+        return history
+    end = len(dates) - int(day(dates[-1]) == day(now))
+    result = dict(history, close=c, market_observed_at=stamp.timestamp(), source=live.get('source'))
+    for key, value in zip(columns, (day(now), o, h, l, c, v)):
+        result[key] = list(history[key][:end]) + [value]
+    adjs = history.get('adj_closes') or []
+    if len(adjs) == len(dates):
+        result['adj_closes'] = list(adjs[:end]) + [None]
+    return result
+
+
+def live_action_notifications(snapshot, now):
+    """Publish only the current provisional actions for both directions."""
+    today = day(now)
+    current = set()
+    for group in (snapshot.get('all_rows', snapshot.get('rows', [])), snapshot.get('short_rows', [])):
+        for row in group:
+            if row.get('date') != today or not row.get('latest_event'):
+                continue
+            try:
+                age = (now - datetime.fromisoformat(row.get('observed_at') or '')).total_seconds()
+            except (ValueError, TypeError):
+                continue
+            if -60 <= age <= 1200:
+                current.add((row['code'], row.get('direction', 'long'), row['latest_event']))
+    return [{key: event.get(key) for key in ('code', 'name', 'type', 'direction', 'price', 'date', 'observed_at')}
+            for event in snapshot.get('alerts', [])
+            if event.get('date') == today and event.get('provisional') and
+            (event['code'], event.get('direction', 'long'), event['type']) in current]
+
+
 def clarity_rank(row):
     stage=row.get('signal_stage','watch')
     # JSON persistence turns tuples into lists. A partial market pass mixes
@@ -700,6 +747,10 @@ class ShortTermService:
         n=self.now()
         return self.calendar(n.date()) and (9,0)<=(n.hour,n.minute)<(13,35)
 
+    def scan_reserve(self, intraday):
+        # The intraday scan works in small batches and checks between symbols.
+        return min(self.memory_reserve_mb, 96) if intraday else self.memory_reserve_mb
+
     def refresh_card_quotes(self, session, stocks):
         trading_day, intraday = session
         total = 0
@@ -785,7 +836,7 @@ class ShortTermService:
         for offset in range(0,len(universe),LIGHT_BATCH):
             if time.monotonic()>self.deadline:
                 raise RuntimeError('全市場技術行情回應逾時；保留原結果，稍後可重試')
-            if not self.safe(reserve_mb=self.memory_reserve_mb):
+            if not self.safe(reserve_mb=self.scan_reserve(self.intraday())):
                 raise RuntimeError('全市場初篩因記憶體餘裕不足暫停')
             batch=universe[offset:offset+LIGHT_BATCH]
             quotes=self.light(batch,{c:self.stock_meta[c]['market'] for c in batch}) or {}
@@ -855,7 +906,8 @@ class ShortTermService:
             with self.lock:self.running=True
             intraday=self.intraday();snapshot_key=KEY+(':intraday' if intraday else '')
             self.deadline=time.monotonic()+120
-            if not self.safe(reserve_mb=self.memory_reserve_mb):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
+            reserve = self.scan_reserve(intraday)
+            if not self.safe(reserve_mb=reserve):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
@@ -896,7 +948,7 @@ class ShortTermService:
             for i,code in enumerate(codes):
                 if time.monotonic()>self.deadline:
                     pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
-                if not self.safe(reserve_mb=self.memory_reserve_mb):
+                if not self.safe(reserve_mb=reserve):
                     pause='記憶體餘裕不足，進度已保存';break
                 try:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
@@ -908,6 +960,8 @@ class ShortTermService:
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
                         continue
                     failed_codes.discard(code)
+                    if intraday:
+                        q = with_official_live_bar(q, official.get(code), self.now())
                     observed=number(q.get('market_observed_at'))
                     # A recent fetch is not proof of a recent trade. Require the
                     # source's market timestamp before exposing a live signal.
@@ -979,7 +1033,7 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
-            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=self.memory_reserve_mb) and self.intraday()==intraday and day(self.now())==cycle['day']):
+            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=reserve) and self.intraday()==intraday and day(self.now())==cycle['day']):
                 queued=True
                 try:self.executor.submit(self.build)
                 except Exception:
@@ -1015,8 +1069,6 @@ class ShortTermService:
             quote_session = (day(expected), intraday)
             if cached and expected == self.now().date() and (intraday or self.now().hour >= 14):
                 self.queue_card_quotes(cached, quote_session)
-            if quote_only:
-                return
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
             # Viewing, polling and filtering are read-only. Only the independent
@@ -1025,7 +1077,7 @@ class ShortTermService:
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
             if (refresh or schedule and (not cached or stale or unfinished)) and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
-                if self.safe(reserve_mb=self.memory_reserve_mb):
+                if self.safe(reserve_mb=self.scan_reserve(intraday)):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
                     try:
                         self.executor.submit(self.build)
@@ -1033,6 +1085,8 @@ class ShortTermService:
                         self.running=False; self.error='背景佇列暫時無法接收，請稍後重試'
                 else:
                     self.error='記憶體餘裕不足，稍後可重試'
+            if quote_only:
+                return
             signals_current=bool((cached or {}).get('date')==day(expected) and
                 (cached or {}).get('selection_version')==SELECTION_VERSION and
                 (not intraday or ((cached or {}).get('intraday') and age<=1200)))
@@ -1110,7 +1164,9 @@ class ShortTermService:
                     for k in ('watch','triggered','entry')}
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
-            return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,meta=dict(
+            notifications = live_action_notifications(cached, self.now()) if intraday and signals_current else []
+            return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,
+                notifications=notifications,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 recent_signals=recent,stage_counts=stages,
                 position_counts=position_counts,
