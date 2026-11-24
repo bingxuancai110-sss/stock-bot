@@ -7811,90 +7811,11 @@ def _filter_position_change_logs(logs, trade_date=None, start_date=None, end_dat
     return result
 
 
-def build_position_journal_csv(user_id, current_positions=None, price_map=None,
-                               inst_data=None, logs=None, trade_date=None,
-                               code=None, realized_trades=None,
-                               start_date=None, end_date=None):
-    """輸出操作日報的原始數值 CSV；欄位與網頁日報的分類及已實現損益口徑一致。"""
-    all_logs = (list(logs) if logs is not None else
-                get_position_change_logs(user_id, limit=5000, code=code or None))
-    current_positions = (current_positions if current_positions is not None
-                         else merge_positions(get_positions(user_id)))
-    journal_codes = sorted({str(p.get("code")).strip() for p in current_positions if p.get("code")} |
-                           {str(log.get("code")).strip() for log in all_logs if log.get("code")})
-    if price_map is None:
-        price_map = get_realtime_stocks_bulk(journal_codes, rng="1d") if journal_codes else {}
-    total_value = sum(
-        float((price_map.get(p.get("code")) or {}).get("close") or 0) * int(p.get("shares") or 0)
-        for p in current_positions if price_map.get(p.get("code"))
-    )
-    enriched = enrich_position_change_logs(all_logs, current_positions, price_map, total_value)
-    enriched = _filter_position_change_logs(
-        enriched, trade_date=trade_date, start_date=start_date, end_date=end_date)
-    enriched = _filter_voided_same_day_logs(enriched)
-    realized_trades = (list(realized_trades) if realized_trades is not None
-                       else get_realized_trades(user_id, limit=500))
-    realized_by_key = {}
-    for trade in realized_trades:
-        sold_date = _position_change_date(trade.get("sold_on"))
-        trade_code = str(trade.get("code") or "").strip()
-        realized_pl = trade.get("realized_pl")
-        if sold_date and trade_code and realized_pl is not None:
-            key = (trade_code, sold_date)
-            realized_by_key[key] = realized_by_key.get(key, 0.0) + float(realized_pl)
-
-    grouped = {}
-    for log in enriched:
-        grouped.setdefault(_position_change_date(log.get("trade_date")), []).append(log)
-    group_order = ("新增", "加碼", "減碼", "刪除")
-    output = io.StringIO(newline="")
-    writer = csv.writer(output, lineterminator="\r\n")
-    writer.writerow(["交易日期", "標的代號", "標的名稱", "狀態", "交易股數", "操作前持股",
-                     "操作後持股", "變動幅度 (%)", "成交／成本價", "目前權重 (%)",
-                     "權重變動 (%)", "已實現損益", "備註"])
-    attached_pnl_keys = set()
-    for day in sorted(grouped, key=lambda value: value or date.min, reverse=True):
-        status_groups = {label: [] for label in group_order}
-        for log in grouped[day]:
-            label, _cls = _position_change_journal_status(log)
-            status_groups[label].append(log)
-        for label in group_order:
-            for log in status_groups[label]:
-                item_code = str(log.get("code") or "").strip()
-                pnl_key = (item_code, day)
-                realized_pl = None
-                if log.get("action") == "reduce" and pnl_key not in attached_pnl_keys:
-                    realized_pl = realized_by_key.get(pnl_key)
-                    if realized_pl is not None:
-                        attached_pnl_keys.add(pnl_key)
-                change_pct = log.get("change_pct")
-                if label == "新增":
-                    change_pct = 100.0
-                writer.writerow([
-                    day.isoformat() if day else "",
-                    item_code,
-                    stock_display_name(item_code, inst_data or {}),
-                    label,
-                    int(log.get("shares_delta") or 0),
-                    int(log.get("shares_before") or 0),
-                    int(log.get("shares_after") or 0),
-                    change_pct if change_pct is not None else "",
-                    log.get("trade_price") if log.get("trade_price") is not None else "",
-                    log.get("current_weight") if log.get("current_weight") is not None else "",
-                    log.get("event_weight") if log.get("event_weight") is not None else "",
-                    realized_pl if realized_pl is not None else "",
-                    str(log.get("note") or ""),
-                ])
-    # UTF-8 BOM 讓 Windows 版 Excel 開啟時可直接辨識中文欄名與標的名稱。
-    return "\ufeff" + output.getvalue()
-
-
 def render_position_change_history(user_id, current_positions=None, price_map=None,
-                                   inst_data=None, logs=None, start_date=None, end_date=None,
-                                   export_code=None):
+                                   inst_data=None, logs=None, start_date=None, end_date=None):
     """交易紀錄頁使用跨日期完整操作歷程；首頁仍使用逐日操作日報。"""
     all_logs = (list(logs) if logs is not None else
-                get_position_change_logs(user_id, limit=5000, code=export_code or None))
+                get_position_change_logs(user_id, limit=5000))
     if not all_logs:
         return ""
     current_positions = (current_positions if current_positions is not None
@@ -7990,19 +7911,9 @@ def render_position_change_history(user_id, current_positions=None, price_map=No
     range_text = (f"{start.strftime('%Y/%m/%d')} – {end.strftime('%Y/%m/%d')}" if start and end else
                   f"{start.strftime('%Y/%m/%d')} 起" if start else
                   f"截至 {end.strftime('%Y/%m/%d')}" if end else "全部操作歷程")
-    export_params = []
-    if start:
-        export_params.append("journal_start=" + quote(start.isoformat(), safe=""))
-    if end:
-        export_params.append("journal_end=" + quote(end.isoformat(), safe=""))
-    if export_code:
-        export_params.append("code=" + quote(str(export_code), safe=""))
-    export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-history">
-  <div class="position-history-head"><div class="position-journal-title-actions"><h2>完整操作歷程</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出明細 CSV</a></div><small>{len(enriched)} 筆操作<br>{html.escape(range_text)}</small></div>
-  <div class="position-history-note">此頁彙總目前篩選區間的所有操作；首頁維持最新一天的逐日操作日報。</div>
+  <div class="position-history-head"><div class="position-journal-title-actions"><h2>完整操作歷程</h2></div><small>{len(enriched)} 筆操作<br>{html.escape(range_text)}</small></div>
   <div class="position-history-summary-grid">{"".join(summary_parts)}</div>
-  <div class="position-history-note" style="background:transparent;padding:0 2px 6px">依股票分組，最近動過的排前面；每一檔上方是淨變動與筆數。</div>
   {"".join(row_parts)}
 </section>'''
 
@@ -8192,7 +8103,7 @@ def archive_monthly_reviews_if_due(today=None):
 
 def render_position_change_journal(user_id, current_positions=None, price_map=None,
                                   inst_data=None, logs=None, trade_date=None,
-                                  display_limit=100, realized_trades=None, export_code=None):
+                                  display_limit=100, realized_trades=None):
     """呈現操作日報；總資產口徑是目前已登錄持股的最新可得市值，不含未輸入的現金／其他資產。"""
     all_logs = logs if logs is not None else get_position_change_logs(user_id, limit=5000)
     if not all_logs:
@@ -8410,8 +8321,8 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
                             f'<span>{html.escape(raw_pct_text)}{raw_price_text}</span>'
                             f'</div>')
                     detail_html = (
-                        f'<details class="position-journal-details">'
-                        f'<summary>查看今日 {merged_count} 筆操作 <span>⌄</span></summary>'
+                        f'<details class="position-journal-details" data-home-view="journal-{day_text}-{html.escape(code, quote=True)}">'
+                        f'<summary><span class="journal-expand-label">展開 {merged_count} 筆操作 ⌄</span><span class="journal-collapse-label">收合操作 ⌃</span></summary>'
                         f'<div class="position-journal-detail-body">{"".join(detail_rows)}</div>'
                         f'</details>')
 
@@ -8432,17 +8343,10 @@ def render_position_change_journal(user_id, current_positions=None, price_map=No
             f'{"".join(row_parts)}')
 
     filter_text = (selected_date.strftime("%Y/%m/%d") if selected_date else "全部日期")
-    export_params = []
-    if selected_date:
-        export_params.append("journal_date=" + quote(selected_date.isoformat(), safe=""))
-    if export_code:
-        export_params.append("code=" + quote(str(export_code), safe=""))
-    export_url = "/web/position-journal.csv" + ("?" + "&".join(export_params) if export_params else "")
     return f'''<section class="position-journal">
-  <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2><a class="position-journal-export" href="{html.escape(export_url, quote=True)}">匯出 CSV</a></div><small>{displayed_stock_count} 檔標的・{len(enriched)} 筆原始操作<br>{html.escape(filter_text)}</small></div>
+  <div class="position-journal-head"><div class="position-journal-title-actions"><h2>操作日報</h2></div><small>{displayed_stock_count} 檔標的・{len(enriched)} 筆原始操作<br>{html.escape(filter_text)}</small></div>
   <div class="position-journal-table-head"><span>標的</span><span>狀態</span><span>持股變動</span><span>持股變動幅度</span><span>目前權重<br>權重變動</span></div>
   {"".join(day_sections)}
-  <div class="position-journal-foot">＊權重變化依目前持股市值計算，僅供紀錄參考；無有效價格時顯示「待確認」。</div>
 </section>'''
 
 
@@ -28754,9 +28658,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261119-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261124-1">
-<script defer src="/static/ui-feedback.js?v=20261119-2"></script>
-<script defer src="/static/app-experience.js?v=20261124-1"></script>
+<link rel="stylesheet" href="/static/app-experience.css?v=20261124-2">
+<script defer src="/static/ui-feedback.js?v=20261124-1"></script>
+<script defer src="/static/app-experience.js?v=20261124-2"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
 <script defer src="/static/short-term.js?v=20261124-2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
@@ -29107,6 +29011,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
           appContent.innerHTML = html;
           executeFragmentScripts(appContent);
           document.dispatchEvent(new CustomEvent('stockbot:pagecontentready'));
+          if (window.StockBotUI && pathname === '/web/portfolio') {{
+            var restored = window.StockBotUI.restoreView(appCurrentViewKey);
+            if (restored) window.scrollTo({{top:restored, behavior:'instant'}});
+          }}
         }})
         .catch(function (e) {{
           if (!previewIsCurrent()) return;
@@ -29182,6 +29090,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     var target = new URL(rawHref, window.location.href);
+    if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (!appRouteKeys[target.pathname]) {{
       var fullRouteTitle = appTitles[target.pathname] || '頁面';
       if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + fullRouteTitle, true, true);
@@ -29210,7 +29119,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     appNavBusy = true;
     if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
     appNavController = window.AbortController ? new AbortController() : null;
-    if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var retryHref = target.pathname + (target.search ? '?' + target.searchParams.toString() : '');
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
@@ -36612,34 +36520,6 @@ def render_portfolio_trend_chart_cached(user_id, requested_period="3m", show_ben
     return rendered
 
 
-@app.route("/web/position-journal.csv")
-@web_login_required
-def web_position_journal_csv(uid):
-    """下載目前使用者、目前篩選範圍的操作日報；不提供跨使用者或任意資料查詢。"""
-    code = str(request.args.get("code") or "").strip()
-    journal_date = str(request.args.get("journal_date") or "").strip()
-    requested_start = str(request.args.get("journal_start") or "").strip()
-    requested_end = str(request.args.get("journal_end") or "").strip()
-    journal_start = requested_start or journal_date
-    journal_end = requested_end or journal_date
-    inst = dict(_t86_cache.get("data") or {})
-    csv_text = build_position_journal_csv(
-        uid, inst_data=inst, trade_date=journal_date or None, code=code or None,
-        start_date=journal_start or None, end_date=journal_end or None)
-    start = _position_change_date(journal_start)
-    end = _position_change_date(journal_end)
-    exact = _position_change_date(journal_date) if journal_date and not (requested_start or requested_end) else None
-    suffix = (exact.strftime('%Y%m%d') if exact else
-              f"{start.strftime('%Y%m%d')}-{end.strftime('%Y%m%d')}" if start and end else
-              start.strftime('%Y%m%d') if start else end.strftime('%Y%m%d') if end else
-              taiwan_today().strftime("%Y%m%d"))
-    response = make_response(csv_text)
-    response.headers["Content-Type"] = "text/csv; charset=utf-8"
-    response.headers["Content-Disposition"] = f'attachment; filename="position_journal_{suffix}.csv"'
-    response.headers["Cache-Control"] = "no-store, max-age=0"
-    return response
-
-
 @app.route("/web/trades")
 @web_login_required
 def web_trades(uid):
@@ -36692,8 +36572,7 @@ def web_trades(uid):
     journal_html = render_position_change_history(
         uid, current_positions=current_positions, price_map=journal_prices,
         inst_data=inst, logs=journal_logs, start_date=journal_start or None,
-        end_date=journal_end or None,
-        export_code=code or None)
+        end_date=journal_end or None)
     monthly_review_html = render_monthly_review(uid, review_month)
 
     # 操作習慣改成伺服器端直接算好，跟頁面一起送出。
@@ -43298,10 +43177,10 @@ def _render_home_v2(d):
   <section class="hv2-feature-section" aria-label="常用功能">
     <div class="hv2-feature-heading"><b>常用功能</b><a href="/web/more" data-app-nav="1">全部功能 <span aria-hidden="true">›</span></a></div>
     <div class="hv2-feature-launcher">
-      <a class="market" href="/web/market" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18V8m5 10V4m5 14v-7m6 7V6M2 21h20"/></svg></i><span><b>個股看盤</b><small>走勢・K 線圖</small></span><em aria-hidden="true">›</em></a>
-      <a class="holdings" href="/web/positions" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h17M7 15l4-5 3 2 6-7"/><circle cx="20" cy="5" r="1"/></svg></i><span><b>我的持股</b><small>部位・損益分析</small></span><em aria-hidden="true">›</em></a>
-      <a class="screen" href="/web/workbench" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5M8 11h6m-3-3v6"/></svg></i><span><b>智慧選股</b><small>找出市場機會</small></span><em aria-hidden="true">›</em></a>
-      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>排行榜</b><small>熱門・績效榜</small></span><em aria-hidden="true">›</em></a>
+      <a class="market" href="/web/market" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 18V8m5 10V4m5 14v-7m6 7V6M2 21h20"/></svg></i><span><b>個股看盤</b></span><em aria-hidden="true">›</em></a>
+      <a class="holdings" href="/web/positions" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h17M7 15l4-5 3 2 6-7"/><circle cx="20" cy="5" r="1"/></svg></i><span><b>我的持股</b></span><em aria-hidden="true">›</em></a>
+      <a class="screen" href="/web/workbench" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 5 5M8 11h6m-3-3v6"/></svg></i><span><b>智慧選股</b></span><em aria-hidden="true">›</em></a>
+      <a class="rank" href="/web/leaderboard" data-app-nav="1"><i aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 19V9h4v10m4 0V4h4v15m4 0v-7h-4"/><path d="M2 21h20"/></svg></i><span><b>排行榜</b></span><em aria-hidden="true">›</em></a>
     </div>
   </section>
   <style>
@@ -43334,24 +43213,22 @@ def _render_home_v2(d):
 
 
   <div class="hv2-sync" aria-live="polite"><b data-home-live-title>{html.escape(d["sync_title"])}</b>　<span data-home-live-note>{html.escape(d["sync_detail"])}</span></div>
+  {'<button type="button" class="home-quote-refresh" data-home-quote-refresh>更新行情</button>' if d["live_script"] else ''}
 
   <p class="home-quote-quality" data-home-quote-quality aria-live="polite">{html.escape(d.get("quote_quality", "持股行情同步中"))}</p>
   <section class="hv2-sec home-impact-section" aria-label="今日持股對組合的影響">
     <div class="hv2-st"><span class="hv2-h">今天誰在拉抬、誰在拖累？</span><span class="hv2-cnt">{html.escape(d["contribution_day_label"])}</span></div>
-    <p class="home-impact-intro">依持股比重與今日交易，換算每檔對組合的影響。</p>
     <div class="home-impact-highlights">{_hv2_impact_card(d.get("impact_positive"), "最大拉抬", "positive")}{_hv2_impact_card(d.get("impact_negative"), "最大拖累", "negative")}</div>
     <div class="hv2-impact-toggle" role="group" aria-label="貢獻圖表顯示方式"><button type="button" data-home-impact-mode="contribution" aria-pressed="true">對組合的影響</button><button type="button" data-home-impact-mode="stock" aria-pressed="false">個股自身漲跌</button></div>
-    <span class="home-impact-caption" data-home-impact-caption>長條越長，對組合影響越大；數字單位為個百分點。</span>
     {d["stale_notice"]}{d.get("impact_basis_notice", "")}
     <div class="home-impact-groups">{d["contribution_groups"]}</div>
-    <p class="home-impact-help">各側最多列出 5 檔；點選持股可看當日漲跌與計算依據。</p>
   </section>
 
   {d["holdings_html"]}
 
   <div class="hv2-journal-wrap" aria-label="近期操作日報">{d["journal_html"]}</div>
 
-  <details class="hv2-fold"><summary class="hv2-sum">查看完整組合判讀 →</summary><div class="hv2-fold-body">{d["judgement_html"]}</div></details>
+  <details class="hv2-fold" data-home-view="judgement"><summary class="hv2-sum">查看完整組合判讀 →</summary><div class="hv2-fold-body">{d["judgement_html"]}</div></details>
   {d["live_script"]}
 </div>
 """ + _HV2_JS)
@@ -44194,13 +44071,18 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     if intraday_window or _taiwan_post_close():
         home_intraday_script = r'''<script>
 (function(){
-  var timer=null,busy=false,stopped=false,marketEl=document.querySelector('[data-home-market-pct]');
+  var timer=null,busy=false,stopped=false,disposed=false,marketEl=document.querySelector('[data-home-market-pct]');
   if(!marketEl)return;
+  var homeRoot=marketEl.closest('#hv2'),refreshButton=homeRoot.querySelector('[data-home-quote-refresh]');
+  var scrollAt=-Infinity,contributionTimer=null,pendingContribution=null,requestController=null,manualTimer=null;
+  function onScroll(){scrollAt=performance.now();}
+  window.addEventListener('scroll',onScroll,{passive:true});
   function token(){try{return new URLSearchParams(window.location.search).get('t')||localStorage.getItem('stockbot_web_token')||''}catch(e){return ''}}
   function esc(v){return String(v==null?'—':v).replace(/[&<>'"]/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'})[c]})}
   function pct(v){var n=Number(v);if(!Number.isFinite(n))return '資料尚未更新';return '<span class="'+(n>0?'up':n<0?'down':'flat')+'">'+(n>0?'+':'')+n.toFixed(2)+'%</span>'}
   function schedule(){
     if(timer)clearTimeout(timer);
+    if(disposed)return;
     // 停掉之後改成每 5 分鐘探一次，而不是永久停止。
     // 原本 stopped=true 就再也不排程，收盤後開著的頁面隔天開盤也不會恢復，
     // 使用者只會看到「盤中已結束」而價格永遠不動。
@@ -44208,6 +44090,32 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
   }
   function setHtml(selector,value){var el=document.querySelector(selector);if(el&&el.innerHTML!==value)el.innerHTML=value;}
   function setText(el,value){if(el&&el.textContent!==value)el.textContent=value;}
+  function updateQuote(el,value,markup){
+    if(!el)return;
+    var field=markup?'innerHTML':'textContent';
+    if(el[field]===value)return;
+    el[field]=value;
+    if(el.animate&&!document.hidden&&!matchMedia('(prefers-reduced-motion: reduce)').matches)
+      el.animate([{backgroundColor:'rgba(75,124,144,.16)'},{backgroundColor:'transparent'}],{duration:340,easing:'ease-out'});
+  }
+  function queueContributions(positive,negative){
+    pendingContribution={positive:positive,negative:negative};
+    if(contributionTimer)clearTimeout(contributionTimer);
+    function settle(){
+      var wait=200-(performance.now()-scrollAt);
+      if(wait>0){contributionTimer=setTimeout(settle,wait);return;}
+      if(disposed||!homeRoot.isConnected)return;
+      var next=pendingContribution;
+      setHtml('[data-home-impact-lead="positive"]',leadHtml(next.positive[0],'幫你撐住組合','impact-up'));
+      setHtml('[data-home-impact-lead="negative"]',leadHtml(next.negative[0],'主要拖累組合','impact-down'));
+      patchContributionRows(homeRoot.querySelector('[data-home-contribution-rows="positive"]'),next.positive,'up');
+      patchContributionRows(homeRoot.querySelector('[data-home-contribution-rows="negative"]'),next.negative,'down');
+      setText(homeRoot.querySelector('[data-home-positive-count]'),String(next.positive.length));
+      setText(homeRoot.querySelector('[data-home-negative-count]'),String(next.negative.length));
+      homeRoot.dispatchEvent(new CustomEvent('home:contributionsupdated'));
+    }
+    settle();
+  }
   function realized(item){if(item.realized_pl==null)return '';var n=Number(item.realized_pl);if(!Number.isFinite(n))return '';return '<small class="impact-realized '+(n>=0?'up':'down')+'">今日已實現損益：'+(n>=0?'+':'')+n.toLocaleString('zh-TW',{maximumFractionDigits:0})+' 元</small>';}
   function leadHtml(item,title,kind){if(!item)return '<div class="impact-lead impact-muted"><small>'+esc(title)+'</small><b>目前沒有資料</b></div>';var change=item.pct>0?'上漲':'下跌',amount=item.contribution>0?'增加約':'減少約';return '<div class="impact-lead '+kind+'"><small>'+esc(title)+'</small><h3>'+esc(item.name)+'</h3><p>今天'+change+' '+Math.abs(Number(item.pct)).toFixed(2)+'%・'+esc(item.basis_text)+'</p><strong><span>對整體組合'+amount+'</span><b>'+Math.abs(Number(item.contribution)).toFixed(2)+'%</b></strong></div>'; }
   function rowsHtml(items,kind){if(!items||!items.length)return '<div class="hv2-empty">目前沒有可顯示的項目。</div>';var mx=Math.max.apply(null,items.map(function(x){return Math.abs(Number(x.contribution))||0;}).concat([0.0001]));return items.map(function(item){var contribution=Number(item.contribution)||0,pct=Number(item.pct)||0,realizedText=item.realized_pl==null?'':'・今日已實現 '+esc(Number(item.realized_pl).toLocaleString('zh-TW',{maximumFractionDigits:0}))+' 元';return '<div class="hv2-row" data-hv2-item data-home-chart-row data-code="'+esc(item.code||'')+'" data-name="'+esc(item.name)+'" data-contribution="'+contribution.toFixed(6)+'" data-stock-pct="'+pct.toFixed(6)+'" role="button" tabindex="0" aria-expanded="false"><div class="hv2-row-main"><b>'+esc(item.name)+'</b><i class="hv2-cbar"><i style="width:'+Math.min(100,Math.abs(contribution)/mx*100).toFixed(0)+'%"></i></i></div><strong class="'+kind+'">'+(contribution>0?'+':'')+contribution.toFixed(2)+' 個百分點</strong><div class="hv2-chart-detail" data-hv2-chart-detail hidden>個股漲跌 '+(pct>0?'+':'')+pct.toFixed(2)+'%・'+esc(item.basis_text)+realizedText+'</div></div>';}).join('');}
@@ -44236,8 +44144,8 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
     document.querySelectorAll('#hv2 .hv2-hold[data-code]').forEach(function(card){
       var q=quotes[card.dataset.code];if(!q||q.close==null||!Number.isFinite(Number(q.close))||Number(q.close)<=0)return;
       var price=card.querySelector('[data-home-holding-price]'),day=card.querySelector('[data-home-holding-day]');
-      setText(price,Number(q.close).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
-      if(day&&q.pct!=null){var value=pct(q.pct);if(day.innerHTML!==value)day.innerHTML=value;}
+      updateQuote(price,Number(q.close).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2}));
+      if(day&&q.pct!=null)updateQuote(day,pct(q.pct),true);
       var stamp=(q.source||'來源未提供')+' · 行情 '+(q.updated_at||'時間未提供')+' · 讀取 '+(q.fetched_at||'時間未提供');
       if(price)price.title=stamp;
       var source=card.querySelector('[data-home-holding-source]');setText(source,stamp);
@@ -44271,7 +44179,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       var homeRoot=document.getElementById('hv2'),incomingAt=quoteViewStamp(data.fetched_at);
       if(homeRoot&&Number(homeRoot.dataset.quoteViewAt||0)>incomingAt&&incomingAt>0)return;
       var currentFreshness=document.querySelector('[data-home-market-freshness]'),marketAt=quoteViewStamp(market&&market.updated_at),previousMarketAt=quoteViewStamp(currentFreshness&&currentFreshness.textContent);
-      if(market&&market.pct!=null&&marketAt>=previousMarketAt){marketEl.innerHTML=pct(market.pct);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
+      if(market&&market.pct!=null&&marketAt>=previousMarketAt){updateQuote(marketEl,pct(market.pct),true);var freshness=document.querySelector('[data-home-market-freshness]');if(freshness)freshness.textContent=(market.stale?'最近有效行情・背景更新中・':'')+(market.source||'TWSE MIS 即時加權指數')+(market.updated_at?'・更新 '+market.updated_at:'');}
       else if(!market||market.pct==null){if(!/%/.test(marketEl.textContent)){marketEl.textContent='資料尚未更新';var missing=document.querySelector('[data-home-market-freshness]');if(missing)missing.textContent='即時 TAIEX 暫時無法取得，未使用日K快照';}}
       var quality=document.querySelector('[data-home-quote-quality]');
       if(quality&&data.quote_freshness)quality.textContent=data.quote_freshness.text;
@@ -44279,7 +44187,7 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
       if(!liveReady){
         var waitingTitle=document.querySelector('[data-home-live-title]'),waitingNote=document.querySelector('[data-home-live-note]');
         if(waitingTitle)waitingTitle.textContent='今天行情同步中';
-        if(waitingNote)waitingNote.textContent=data.note||'先保留頁面已顯示的今天資料，正在背景更新。';
+        if(waitingNote)waitingNote.textContent='等待最新行情';
         return;
       }
       if(liveReady&&portfolio.pct!=null){
@@ -44287,21 +44195,18 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
         var nextPortfolio=Number(portfolio.pct), currentEl=document.querySelector('[data-home-portfolio-pct]');
         var currentText=currentEl?String(currentEl.textContent||'').replace(/[^0-9+\-.]/g,''):'';
         var currentValue=Number(currentText);
-        if(!Number.isFinite(currentValue)||Math.abs(currentValue-nextPortfolio)>0.00001)setHtml('[data-home-portfolio-pct]',pct(nextPortfolio));
+        if(!currentText||!Number.isFinite(currentValue)||Math.abs(currentValue-nextPortfolio)>0.00001)updateQuote(currentEl,pct(nextPortfolio),true);
       }else if(liveReady){
         // Loading gaps keep the previous view above; only a missing baseline reaches this branch.
         setHtml('[data-home-portfolio-pct]','資料不足');
       }
       if(liveReady){
-        setHtml('[data-home-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'—'));
+        updateQuote(homeRoot.querySelector('[data-home-relative]'),portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'—'),true);
         setHtml('[data-home-judgement-relative]',portfolio.relative!=null?pct(portfolio.relative):(portfolio.pct==null?'資料不足':'資料不足'));
       }
       if(liveReady)updateHoldingQuotes(data.quotes||{});
       var positive=liveReady?(portfolio.positive||[]):null,negative=liveReady?(portfolio.negative||[]):null;
-      if(liveReady){
-        var positiveLead=document.querySelector('[data-home-impact-lead="positive"]'),negativeLead=document.querySelector('[data-home-impact-lead="negative"]');if(positiveLead)positiveLead.innerHTML=leadHtml(positive[0],'幫你撐住組合','impact-up');if(negativeLead)negativeLead.innerHTML=leadHtml(negative[0],'主要拖累組合','impact-down');
-        var positiveRows=document.querySelector('[data-home-contribution-rows="positive"]'),negativeRows=document.querySelector('[data-home-contribution-rows="negative"]');patchContributionRows(positiveRows,positive,'up');patchContributionRows(negativeRows,negative,'down');var home=document.getElementById('hv2');if(home)home.dispatchEvent(new CustomEvent('home:contributionsupdated'));
-      }
+      if(liveReady)queueContributions(positive,negative);
       // 尚未取得今日報價的檔要說出來，不能讓它們無聲消失——
       // 使用者會以為自己看漏了，或以為那幾檔今天沒動。
       var staleEl=document.querySelector('.impact-stale');
@@ -44316,35 +44221,58 @@ def render_daily_home_top(uid, holdings, total_value, total_cost, price_map, pl_
           staleEl.style.display='none';
         }
       }
-      if(liveReady){var positiveCount=document.querySelector('[data-home-positive-count]'),negativeCount=document.querySelector('[data-home-negative-count]');if(positiveCount)positiveCount.textContent=positive.length;if(negativeCount)negativeCount.textContent=negative.length;}
       var title=document.querySelector('[data-home-live-title]'),note=document.querySelector('[data-home-live-note]');
-      if(data.view_retained){if(title)title.textContent='行情更新中';if(note)note.textContent=data.note;schedule();return;}
-      if(!data.market_open){stopped=true;if(title)title.textContent='今日收盤資料已更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 同步今日正式收盤行情。');schedule();return;}
-      if(title)title.textContent='盤中行情已局部更新';if(note)note.textContent=data.note||('已於 '+(data.fetched_at||'剛剛')+' 更新；操作日報未重新載入。');
+      if(data.view_retained){setText(title,'行情更新中');setText(note,'等待最新行情');schedule();return;}
+      var stamp=String(data.fetched_at||'').match(/\d{2}:\d{2}/);
+      setText(note,stamp?stamp[0]+' 更新':'');
+      if(!data.market_open){stopped=true;setText(title,'已收盤');schedule();return;}
+      setText(title,'盤中行情');
   }
-  function onFugle(e){if(e.detail&&e.detail.home)applyHome(e.detail.home);}
+  function finishManual(ok){
+    if(!manualTimer)return;
+    clearTimeout(manualTimer);manualTimer=null;
+    refreshButton.disabled=false;
+    setText(refreshButton,ok?'更新行情':'重試行情');
+  }
+  function accept(data){
+    if(disposed)return;
+    applyHome(data);
+    if(data.portfolio&&data.portfolio.ready!==false&&!data.view_retained)finishManual(true);
+  }
+  function onFugle(e){if(e.detail&&e.detail.home)accept(e.detail.home);}
   document.addEventListener('stockbot:fuglequotes',onFugle);
-  document.addEventListener('stockbot:pageleaving',function cleanFugle(){document.removeEventListener('stockbot:fuglequotes',onFugle);document.removeEventListener('stockbot:pageleaving',cleanFugle);});
   function refresh(){
     // 大盤與持股由同一份績效 payload 回傳，避免每輪再獨立打一次 MIS 指數請求，
     // 減少重複連線與上游競爭；背景更新完成後由同一 API 一次更新兩者。
     // stopped 時仍然要送出請求（間隔已拉長到 5 分鐘），
     // 由伺服器的 market_open 決定要不要恢復——判斷時段的事交給伺服器，
     // 前端自己算時區在 iOS Safari 上出過事（持股頁那個 bug）。
+    if(disposed)return;
     if(document.hidden||busy){schedule();return;}
     if(window.StockBotFugle&&window.StockBotFugle.active()){window.StockBotFugle.request();schedule();return;}
     busy=true;
     var url='/web/api/portfolio/intraday',t=token();if(t)url+='?t='+encodeURIComponent(t);
-    fetch(url,{credentials:'same-origin',cache:'no-store'}).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
+    requestController=window.AbortController?new AbortController():null;
+    fetch(url,Object.assign({credentials:'same-origin',cache:'no-store'},requestController?{signal:requestController.signal}:{})).then(function(response){if(!response.ok)throw new Error('HTTP '+response.status);return response.json();}).then(function(data){
       if(window.StockBotFugle&&window.StockBotFugle.active())return;
-      applyHome(data);
-    }).catch(function(){var note=document.querySelector('[data-home-live-note]');if(note)note.textContent='首頁盤中行情暫時無法更新；保留頁面最後有效資料。';}).finally(function(){busy=false;schedule();});
+      accept(data);
+    }).catch(function(){if(!disposed){setText(homeRoot.querySelector('[data-home-live-note]'),'暫時無法更新行情');finishManual(false);}}).finally(function(){busy=false;requestController=null;schedule();});
   }
-  document.addEventListener('visibilitychange',function(){if(!document.hidden)refresh();});
-  // 離開頁面時只停計時器，不要設 stopped。
-  // stopped 是「伺服器說非盤中」的旗標，被離開頁面借去用之後，
-  // 再導覽回首頁時它仍是 true，輪詢就再也不會恢復。
-  document.addEventListener('stockbot:pageleaving',function(){if(timer)clearTimeout(timer);timer=null;});
+  function onVisibility(){if(!document.hidden)refresh();}
+  document.addEventListener('visibilitychange',onVisibility);
+  if(refreshButton)refreshButton.onclick=function(){
+    refreshButton.disabled=true;setText(refreshButton,'更新中…');
+    manualTimer=setTimeout(function(){finishManual(false);},12000);
+    refresh();
+  };
+  document.addEventListener('stockbot:pageleaving',function dispose(){
+    disposed=true;clearTimeout(timer);clearTimeout(contributionTimer);clearTimeout(manualTimer);
+    if(requestController)requestController.abort();
+    window.removeEventListener('scroll',onScroll);
+    document.removeEventListener('visibilitychange',onVisibility);
+    document.removeEventListener('stockbot:fuglequotes',onFugle);
+    document.removeEventListener('stockbot:pageleaving',dispose);
+  });
   // 完整頁面伺服器端已同步抓完全部持股與大盤；不要立刻再打第二輪，
   // 避免首頁剛顯示就重複佔用 MIS。之後每 5 秒查詢一次完成結果。
   schedule();
@@ -46403,8 +46331,8 @@ def web_portfolio(uid):
                 logs=history_logs, trade_date=previous_journal_date, display_limit=20,
                 realized_trades=realized_trades)
             history_html = (
-                f'<details class="home-journal-history"><summary>'
-                f'查看前一次操作・{previous_journal_date.strftime("%Y/%m/%d")} <span>⌄</span></summary>'
+                f'<details class="home-journal-history" data-home-view="journal-history"><summary>'
+                f'{previous_journal_date.strftime("%Y/%m/%d")}<span class="journal-expand-label">展開前一次操作 ⌄</span><span class="journal-collapse-label">收合前一次操作 ⌃</span></summary>'
                 f'{history_inner}'
                 f'</details>'
             )
@@ -46415,10 +46343,18 @@ def web_portfolio(uid):
             '<div class="position-journal-head">'
             '<div class="position-journal-title-actions"><h2>操作日報</h2></div>'
             '<small>今日無操作</small></div>'
-            '<div class="position-journal-empty">今天沒有加碼／減碼操作，日報已預設收合。</div>'
             f'{history_html}'
             '</section>'
         )
+    journal_open = " open" if today_journal_logs else ""
+    journal_status = "" if today_journal_logs else "<small>今日無操作</small>"
+    journal_html = (
+        f'<details class="home-journal-disclosure" data-home-view="journal"{journal_open}>'
+        f'<summary><span><b>操作日報</b>{journal_status}</span>'
+        '<span class="journal-toggle"><span class="journal-expand-label">展開日報 ⌄</span>'
+        '<span class="journal-collapse-label">收合日報 ⌃</span></span></summary>'
+        f'{journal_html}</details>'
+    )
     daily_pretrade_exposure = _build_daily_pretrade_exposure(
         holdings, price_map, journal_logs, inst)
     realized_by_code = _today_realized_by_code(realized_trades)
@@ -46508,14 +46444,14 @@ def web_portfolio(uid):
 .home-analysis-body>.section-head:first-child{{margin-top:0}}
 @media(max-width:480px){{.home-analysis-disclosure>summary{{padding:13px 14px}}.home-analysis-body{{padding:12px 10px 3px}}}}
 </style>
-<details class="home-analysis-disclosure" id="home-analysis">
-<summary><span><b>完整組合分析</b><small>總覽、組合走勢與目標配置</small></span><em>展開查看 ↓</em></summary>
+<details class="home-analysis-disclosure" id="home-analysis" data-home-view="analysis">
+<summary><span><b>完整組合分析</b></span><em>展開查看 ↓</em></summary>
 <div class="home-analysis-body">
 {industry_css}<div class="section-head"><h2>組合總覽</h2><span class="section-note">目前持倉摘要</span></div>
 <div class="totals"><div><div class="total-label">總市值</div><div class="total-value num">{total_value:,.0f}</div><div class="total-sub">{fmt_pct(pl_total)}</div></div><div><div class="total-label">持股檔數</div><div class="total-value num">{len(holdings)}</div><div class="total-sub">{len(by_industry)} 個產業</div></div><div><div class="total-label">最大單一持股</div><div class="total-value num">{top['weight']:.1f}%</div><div class="total-sub">{top['name']}</div></div></div>
 <div class="section-head"><h2>組合走勢</h2><span class="section-note">相對起始日漲跌幅</span></div><div class="callout" style="padding:14px 15px 4px">{trend_html}</div>
-<details class="home-target-collapse" id="home-target-settings">
-  <summary><span><b>目標配置</b><small>調整理想比例，對照目前持股；不會自動買賣</small></span><span class="home-target-summary-action">展開設定 ↓</span></summary>
+<details class="home-target-collapse" id="home-target-settings" data-home-view="allocation">
+  <summary><span><b>目標配置</b></span><span class="home-target-summary-action">展開設定 ↓</span></summary>
   {today_target_allocation_html}
 </details>
 {today_target_script}

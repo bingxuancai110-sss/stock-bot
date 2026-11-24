@@ -38,7 +38,7 @@
     var home=scope.querySelector('#hv2');if(!home||homeStatusRoot===home)return;
     var comparison=home.querySelector('.hv2-cmp'),box=comparison&&comparison.closest('.hv2-sec');if(!box)return;
     if(homeStatusObserver)homeStatusObserver.disconnect();
-    var parts=Array.from(home.querySelectorAll('.hv2-src,.hv2-sync,[data-home-quote-quality]'));
+    var parts=Array.from(home.querySelectorAll('.hv2-src,.hv2-sync,[data-home-quote-quality],[data-home-quote-refresh]'));
     if(!parts.length)return;
     var details=box.querySelector('.home-market-details'),label,stamp,body;
     if(details){label=details.querySelector('.home-market-status');stamp=details.querySelector('.home-market-stamp');body=details.querySelector('.home-market-detail-body');}
