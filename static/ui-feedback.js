@@ -90,11 +90,25 @@
     var scope=root();if(!scope)return;
     var radios=[];each(scope,'input.trend-period-radio:checked',function(input){radios.push(input.id);});
     var benchmark=scope.querySelector('#trend-benchmark'),board=scope.querySelector('#rankTabs button.on');
-    views.delete(key);views.set(key,{y:window.scrollY||0,radios:radios,benchmark:benchmark?benchmark.checked:null,board:board?board.dataset.board:null});
+    var state={y:window.scrollY||0,radios:radios,benchmark:benchmark?benchmark.checked:null,board:board?board.dataset.board:null};
+    if(scope.querySelector('#hv2')){
+      state.details={};
+      each(scope,'details[data-home-view]',function(item){state.details[item.dataset.homeView]=item.open;});
+      try{sessionStorage.setItem('stockbot-home-view',JSON.stringify(state));}catch(ignore){}
+    }
+    views.delete(key);views.set(key,state);
     if(views.size>16)views.delete(views.keys().next().value);
   }
   function restoreView(key) {
-    var state=views.get(key),scope=root();if(!state||!scope)return 0;
+    var state=views.get(key),scope=root();if(!scope)return 0;
+    if(!state&&scope.querySelector('#hv2')){
+      try{state=JSON.parse(sessionStorage.getItem('stockbot-home-view')||'null');}catch(ignore){}
+    }
+    if(!state)return 0;
+    if(state.details)each(scope,'details[data-home-view]',function(item){
+      var open=state.details[item.dataset.homeView];
+      if(typeof open==='boolean')item.open=open;
+    });
     state.radios.forEach(function(id){var input=document.getElementById(id);if(input&&scope.contains(input)&&input.matches('input.trend-period-radio')){input.checked=true;input.dispatchEvent(new Event('change',{bubbles:true}));}});
     var benchmark=scope.querySelector('#trend-benchmark');if(benchmark&&state.benchmark!==null)benchmark.checked=state.benchmark;
     if(state.board)each(scope,'#rankTabs button[data-board]',function(button){if(button.dataset.board===state.board&&!button.classList.contains('on'))button.click();});
