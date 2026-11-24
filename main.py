@@ -11213,6 +11213,10 @@ RADAR_SCHEDULED_DEEP_SCAN_LIMIT = 240
 RADAR_PRICE_BATCH_SIZE = 4
 RADAR_SCAN_POLICY_VERSION = 3
 RADAR_LIGHT_SCAN_RESERVE_MB = 40  # bounded single-process scans; rechecked between small batches
+# Short-term carries a resumable, serialized stock queue and quote history. Keep
+# substantially more headroom than the lightweight Radar cache refresh so its
+# deep-history batches cannot push the 512 MiB web instance into an OOM restart.
+SHORT_TERM_SCAN_RESERVE_MB = 192
 
 
 def _reclaim_market_scan_memory():
@@ -55235,7 +55239,7 @@ _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
-    memory_reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB,
+    memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),

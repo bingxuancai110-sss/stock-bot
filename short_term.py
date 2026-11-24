@@ -14,7 +14,7 @@ from technical_space import long_space
 
 VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
-MAX_POOL = 80
+MAX_POOL = 24
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
