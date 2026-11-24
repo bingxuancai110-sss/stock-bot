@@ -47637,6 +47637,9 @@ def cron_radar_live():
         abort(403)
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
+    short_term_service = globals().get("_short_term_service")
+    if short_term_service and short_term_service.intraday():
+        run_in_background("短線卡片盤中報價檢查", lambda: short_term_service.payload(quote_only=True))
     if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
         with _SCREENER_REFRESH_LOCK:
             _SCREENER_REFRESH_ERRORS["radar"] = time.monotonic()
@@ -55246,7 +55249,7 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
     now = taiwan_now()
     if intraday:
         quotes = _fetch_twse_mis_quotes(codes, market_suffix=suffixes,
-                                        cache_result=False, quick_mode=True)
+                                        force_refresh=True, cache_result=False, quick_mode=True)
     else:
         quotes = _fetch_official_daily_close_quotes(codes, market_suffix=suffixes, now=now)
     result = {}
