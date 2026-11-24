@@ -674,9 +674,11 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None
 
 
 class ShortTermService:
-    def __init__(self, *, connect, store, quote, executor, safe, now, equity, calendar=None,light=None,category=None):
+    def __init__(self, *, connect, store, quote, executor, safe, now, equity,
+                 calendar=None, light=None, category=None, memory_reserve_mb=40):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
+        self.memory_reserve_mb=max(24,int(memory_reserve_mb))
         self.calendar=calendar or (lambda d:d.weekday()<5)
         self.light=light;self.category=category or (lambda code,industry:'未分類')
         self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
@@ -725,7 +727,7 @@ class ShortTermService:
         for offset in range(0,len(universe),LIGHT_BATCH):
             if time.monotonic()>self.deadline:
                 raise RuntimeError('全市場技術行情回應逾時；保留原結果，稍後可重試')
-            if not self.safe(reserve_mb=96):
+            if not self.safe(reserve_mb=self.memory_reserve_mb):
                 raise RuntimeError('全市場初篩因記憶體餘裕不足暫停')
             batch=universe[offset:offset+LIGHT_BATCH]
             quotes=self.light(batch,{c:self.stock_meta[c]['market'] for c in batch}) or {}
@@ -795,7 +797,7 @@ class ShortTermService:
             with self.lock:self.running=True
             intraday=self.intraday();snapshot_key=KEY+(':intraday' if intraday else '')
             self.deadline=time.monotonic()+120
-            if not self.safe(reserve_mb=96):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
+            if not self.safe(reserve_mb=self.memory_reserve_mb):raise RuntimeError('記憶體餘裕不足，已保留掃描進度')
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
@@ -830,13 +832,13 @@ class ShortTermService:
             for i,code in enumerate(codes):
                 if time.monotonic()>self.deadline:
                     pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
-                if not self.safe(reserve_mb=96):
+                if not self.safe(reserve_mb=self.memory_reserve_mb):
                     pause='記憶體餘裕不足，進度已保存';break
                 try:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
                     suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
                     q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix,
-                                 force_refresh=intraday)
+                                 force_refresh=intraday,cache_result=False)
                     if not q:
                         failures+=1;failed_codes.add(code)
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
@@ -911,7 +913,7 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
-            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=96) and self.intraday()==intraday and day(self.now())==cycle['day']):
+            if (not complete and (not pause or time_exhausted) and self.safe(reserve_mb=self.memory_reserve_mb) and self.intraday()==intraday and day(self.now())==cycle['day']):
                 queued=True
                 try:self.executor.submit(self.build)
                 except Exception:
@@ -949,7 +951,7 @@ class ShortTermService:
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
             if (refresh or schedule and (not cached or stale or unfinished)) and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
-                if self.safe(reserve_mb=96):
+                if self.safe(reserve_mb=self.memory_reserve_mb):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
                     try:
                         self.executor.submit(self.build)
