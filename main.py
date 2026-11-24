@@ -28754,9 +28754,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261119-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
+<link rel="stylesheet" href="/static/app-experience.css?v=20261124-1">
 <script defer src="/static/ui-feedback.js?v=20261119-2"></script>
-<script defer src="/static/app-experience.js?v=20261119-2"></script>
+<script defer src="/static/app-experience.js?v=20261124-1"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
 <script defer src="/static/short-term.js?v=20261124-2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
@@ -29033,7 +29033,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
     '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist',
-    '/web/market':'market'
+    '/web/market':'market','/web/us-rotation':'us_rotation'
   }};
   var appTitles = {{
     '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股',
@@ -29085,12 +29085,16 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     // 這裡在插入後檢查一次：還是預覽就自己去要完整版。
     var preview = appContent.querySelector('.daily-fast-sync, [data-fast-preview]');
     if (!preview) return;
+    function previewIsCurrent() {{
+      return preview.isConnected && appContent.contains(preview);
+    }}
     var params = new URLSearchParams(search || window.location.search);
     params.set('fragment', '1');
     params.delete('fast');          // 關鍵：不帶 fast 才會拿到完整內容
     var full = pathname + '?' + params.toString();
     var tries = 0;
     function load() {{
+      if (!previewIsCurrent()) return;
       tries += 1;
       fetch(full, {{credentials: 'same-origin', cache: 'no-store'}})
         .then(function (r) {{
@@ -29098,11 +29102,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
           return r.text();
         }})
         .then(function (html) {{
-          if (html.indexOf('AUTH_EXPIRED') >= 0) return;
+          if (!previewIsCurrent() || html.indexOf('AUTH_EXPIRED') >= 0) return;
+          document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
           appContent.innerHTML = html;
           executeFragmentScripts(appContent);
+          document.dispatchEvent(new CustomEvent('stockbot:pagecontentready'));
         }})
         .catch(function (e) {{
+          if (!previewIsCurrent()) return;
           // 完整內容比較慢，逾時或短暫 5xx 都重試；
           // 但要把狀態寫出來，不要讓人對著「正在整合」乾等。
           var note = appContent.querySelector('.daily-fast-sync p, .daily-fast-sync div');
@@ -29240,12 +29247,15 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         // 避免文字與資料已可見，載入卡仍蓋在畫面上造成「明明載入完卻卡住」的錯覺。
         if (window.finishPageNavLoader) window.finishPageNavLoader();
         hideLocalPageLoading();
+        target.searchParams.delete('fragment');
+        if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
+        setAppNavState(target.pathname);
         executeFragmentScripts(appContent);
         if (target.pathname !== '/web/portfolio') {{
             upgradePreviewFragment(target.pathname, target.search);
         }}
         appContent.classList.remove('app-page-enter');
-        if (!prefersReducedMotion()) {{
+        if (!window.StockBotUI && !prefersReducedMotion()) {{
           window.requestAnimationFrame(function() {{
             appContent.classList.add('app-page-enter');
             window.setTimeout(function() {{ appContent.classList.remove('app-page-enter'); }}, 350);
@@ -29254,9 +29264,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         appNavBusy = false;
         appContent.removeAttribute('aria-busy');
         appContent.classList.remove('app-page-loading');
-        target.searchParams.delete('fragment');
-        if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
-        setAppNavState(target.pathname);
         document.dispatchEvent(new CustomEvent('stockbot:pagecontentready'));
         if (window.StockBotUI) {{ window.StockBotUI.routeEnd(true); window.StockBotUI.scan(); }}
         try {{

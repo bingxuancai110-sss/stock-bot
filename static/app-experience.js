@@ -2,30 +2,29 @@
 (function(){
   'use strict';
   if(window.StockBotExperience)return;
-  var nav,inner,cursor,status,pendingPath=null,statusTimer=0,navFrame=0,scrollFrame=0;
+  var nav,inner,cursor,pendingPath=null,navFrame=0,scrollFrame=0;
   var arrived=new WeakSet(),homeStatusObserver=null,homeStatusRoot=null;
   var motion=matchMedia('(prefers-reduced-motion: reduce)');
   function syncNav(){
     navFrame=0;nav=document.querySelector('.app-bottom-nav');inner=nav&&nav.querySelector('.bottom-inner');
     if(!inner)return;
     if(!cursor||!cursor.isConnected){cursor=document.createElement('span');cursor.className='app-nav-cursor';cursor.setAttribute('aria-hidden','true');inner.appendChild(cursor);}
-    var target=null;
     inner.querySelectorAll('a').forEach(function(link){
       var match=!!pendingPath&&new URL(link.href,location.href).pathname===pendingPath;
-      link.classList.toggle('experience-nav-target',match);if(match)target=link;
+      link.classList.toggle('experience-nav-target',match);
     });
-    target=target||inner.querySelector('a.on');if(!target){cursor.hidden=true;return;}
+    var target=inner.querySelector('a.on');if(!target){cursor.hidden=true;return;}
     cursor.hidden=false;var a=target.getBoundingClientRect(),b=inner.getBoundingClientRect();
     cursor.style.width=a.width+'px';cursor.style.height=a.height+'px';cursor.style.transform='translate3d('+(a.left-b.left)+'px,'+(a.top-b.top)+'px,0)';
     requestAnimationFrame(function(){if(nav&&nav.isConnected)nav.classList.add('experience-nav-ready');});
   }
   function scheduleNav(){if(!navFrame)navFrame=requestAnimationFrame(syncNav);}
   function endRoute(){
-    clearTimeout(statusTimer);pendingPath=null;document.body.classList.remove('app-route-pending');
-    if(status)status.hidden=true;scheduleNav();
+    pendingPath=null;document.body.classList.remove('app-route-pending');
+    scheduleNav();
   }
   function startRoute(e){
-    clearTimeout(statusTimer);var detail=e.detail||{};pendingPath=detail.path||null;
+    var detail=e.detail||{};pendingPath=detail.path||null;
     document.body.classList.add('app-route-pending');syncNav();
 
   }
