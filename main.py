@@ -10557,6 +10557,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 "close": close, "previous_close": previous,
                 "pct": (close - previous) / previous * 100,
                 "fetched_at": taiwan_now().strftime("%Y-%m-%d %H:%M:%S"),
+                "open": number("o"),
                 "high": number("h") or close, "low": number("l") or close,
                 "volume": int(volume_lots * 1000) if volume_lots is not None else 0,
                 "limit_up": limit_up, "limit_down": limit_down,
@@ -28748,8 +28749,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261117-12">
 <script defer src="/static/ui-feedback.js?v=20261119-2"></script>
 <script defer src="/static/app-experience.js?v=20261119-2"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261120-5">
-<script defer src="/static/short-term.js?v=20261124-1"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
+<script defer src="/static/short-term.js?v=20261124-2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -47631,15 +47632,16 @@ def cron_short_term_live():
 
 @app.route("/cron/radar-live", methods=["POST", "GET"])
 def cron_radar_live():
-    """Render Cron 每 10 分鐘呼叫；只在盤中背景建立 radar_live 快照。"""
+    """既有盤中排程會檢查雷達與短線快照。"""
     secret = request.args.get("token")
-    if secret != os.environ.get("CRON_SECRET"):
+    expected_secret = os.environ.get("CRON_SECRET")
+    if not expected_secret or secret != expected_secret:
         abort(403)
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
     short_term_service = globals().get("_short_term_service")
     if short_term_service and short_term_service.intraday():
-        run_in_background("短線卡片盤中報價檢查", lambda: short_term_service.payload(quote_only=True))
+        run_in_background("短線盤中更新檢查", lambda: short_term_service.payload(schedule=True, quote_only=True))
     if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
         with _SCREENER_REFRESH_LOCK:
             _SCREENER_REFRESH_ERRORS["radar"] = time.monotonic()
@@ -55264,6 +55266,9 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
             "date": quote_date.isoformat(), "time": item.get("close_time"),
             "final": not intraday, "source": item.get("source"),
         }
+        if intraday:
+            result[code].update(open=item.get("open"), high=item.get("high"),
+                                low=item.get("low"), volume=item.get("volume"))
     return result
 
 
