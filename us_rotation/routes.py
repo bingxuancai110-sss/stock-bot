@@ -206,7 +206,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   <section class="us-hero">
     <div class="us-kicker">US → TW INTELLIGENCE</div>
     <details class="us-research"><summary>研究方式與範圍</summary><p>追蹤美國產業強弱，接著檢視台灣產品與供應鏈證據。產業走強只代表研究線索，不是台股買進訊號。</p></details>
-    <div class="us-meta"><span class="us-pill" id="us-asof">資料日期載入中</span><span class="us-pill">日線 · 交易日計算</span><span class="us-pill">SPY 為市場基準</span><a class="us-pill" id="us-import-link" href="/web/us-rotation/import" style="color:inherit;text-decoration:none">匯入歷史資料</a></div>
+    <div class="us-meta"><span class="us-pill" id="us-asof">資料日期載入中</span><span class="us-pill">每日收盤後更新</span><span class="us-pill">SPY 為市場基準</span><a class="us-pill" id="us-import-link" href="/web/us-rotation/import" style="color:inherit;text-decoration:none">匯入歷史資料</a></div>
   </section>
   <section class="us-section" id="us-risk-section"><div class="us-section-head"><div><h2>風險與止跌觀察</h2><p>先選市場，再看壓力與短線價格突破。</p></div></div><div class="us-alert-grid" id="us-risk-alerts"></div><p class="us-note">指標只供觀察，不代表一定下跌或已經見底。歷史統計可在各卡片展開查看。</p></section>
   <section class="us-section">
@@ -544,6 +544,42 @@ __RESULT__
     # without exposing a second public refresh path.
     bp.us_rotation_refresh_job = _refresh_job
 
+    def _save_daily_close(histories, update_method):
+        connect, release = job_connect or get_db_connection, job_release or release_db_connection
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        snapshot = calculate_snapshot(histories, source=SOURCE_NAME, fetched_at=fetched_at)
+        snapshot["current_risk_warning"] = calculate_current_risk(histories)
+        source_meta = {"update_method": update_method}
+        if update_method == "github_daily_sync":
+            source_meta["workflow"] = "us-rotation-daily.yml"
+        snapshot_id = save_snapshot(connect, release, snapshot, histories, source_meta=source_meta)
+        result = {"ok": True, "snapshot_id": snapshot_id, "as_of": snapshot["as_of"],
+                  "vix_date": snapshot["current_risk_warning"]["us"].get("as_of"),
+                  "vix_close": snapshot["current_risk_warning"]["us"].get("value"),
+                  "symbols": len(histories), "fetched_at": fetched_at}
+        print("美股每日資料已保存：" + json.dumps(result, ensure_ascii=False), flush=True)
+        return result
+
+    def _morning_daily_close():
+        from .daily_sync import closing_cutoff, encode_closed_history, validate_risk_dates
+
+        connect, release = job_connect or get_db_connection, job_release or release_db_connection
+        cutoff = closing_cutoff()
+        prior = (read_latest(connect, release) or {}).get("as_of") or ""
+        if cutoff.weekday() >= 5 or prior >= cutoff.isoformat():
+            return "美股輪動已保存最近收盤日或美國週末，略過補抓。"
+        histories, _, _ = fetch_market_histories(allow_unofficial=True)
+        histories, _ = parse_history_csv(encode_closed_history(histories))
+        as_of = validate_risk_dates(histories)
+        # A closed market or delayed provider can legitimately return the same date.
+        latest = (read_latest(connect, release) or {}).get("as_of") or ""
+        if as_of <= latest:
+            return f"美股來源目前最近收盤日為 {as_of}，保留已保存快照。"
+        result = _save_daily_close(histories, "render_morning_fallback")
+        return f"美股輪動早晨補抓完成，資料日 {result['as_of']}，共 {result['symbols']} 檔。"
+
+    bp.us_rotation_morning_daily_close = _morning_daily_close
+
     @bp.route("/web/us-rotation")
     @web_login_required
     def page(uid):
@@ -643,17 +679,7 @@ __RESULT__
             prior = read_latest(connect, release) or {}
             if prior.get("as_of") and as_of < prior["as_of"]:
                 return jsonify({"ok": False, "error": "不以較舊批次覆蓋目前快照"}), 409
-            fetched_at = datetime.now(timezone.utc).isoformat()
-            snapshot = calculate_snapshot(histories, source=SOURCE_NAME, fetched_at=fetched_at)
-            snapshot["current_risk_warning"] = calculate_current_risk(histories)
-            snapshot_id = save_snapshot(connect, release, snapshot, histories,
-                source_meta={"update_method": "github_daily_sync", "workflow": "us-rotation-daily.yml"})
-            result = {"ok": True, "snapshot_id": snapshot_id, "as_of": as_of,
-                      "vix_date": snapshot["current_risk_warning"]["us"].get("as_of"),
-                      "vix_close": snapshot["current_risk_warning"]["us"].get("value"),
-                      "symbols": len(histories), "fetched_at": fetched_at}
-            print("美股每日資料已保存：" + json.dumps(result, ensure_ascii=False), flush=True)
-            return jsonify(result)
+            return jsonify(_save_daily_close(histories, "github_daily_sync"))
         except Exception as exc:
             print("美股每日資料保存失敗：" + type(exc).__name__, flush=True)
             return jsonify({"ok": False, "error": type(exc).__name__}), 503

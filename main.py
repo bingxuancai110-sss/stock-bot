@@ -22060,9 +22060,17 @@ def cron_warmup():
     建議排在交易日早上 08:00 之前跑一次，收盤抓完 T86 之後再跑一次。
     """
     secret = request.args.get("token")
-    if secret != os.environ.get("CRON_SECRET"):
+    expected_secret = os.environ.get("CRON_SECRET")
+    if not expected_secret or secret != expected_secret:
         abort(403)
 
+    now = taiwan_now()
+    if now.hour == 7 and now.weekday() in range(1, 6):
+        rotation = app.blueprints.get("us_rotation")
+        refresh = getattr(rotation, "us_rotation_morning_daily_close", None)
+        if callable(refresh):
+            run_in_background("美股輪動早晨備援",
+                lambda: _guarded_background_stage("美股輪動早晨備援", refresh, reserve_mb=112))
     return run_in_background("預熱快取", _do_warmup), 200
 
 
@@ -22424,8 +22432,8 @@ def _do_warmup():
         print(f"❌ 預熱美股指數失敗: {e}")
         done.append("美股指數 失敗")
 
-    # US daily downloads run outside this memory-limited web process.
-    # Taiwan-company research keeps its separate existing afternoon update.
+    # The usual US daily sync runs externally. The morning cron queues its
+    # separate fallback before warmup; Taiwan-company research runs separately.
     try:
         if warmup_started_at.weekday() < 5 and warmup_started_at.hour == 7:
             done.append("美股輪動 由獨立每日排程更新（06:35／07:05）")
@@ -22438,8 +22446,8 @@ def _do_warmup():
         else:
             done.append("美股輪動 略過（盤中不重建日線研究）")
     except Exception as e:
-        print(f"❌ 預熱美股輪動失敗: {e}")
-        done.append("美股輪動 失敗")
+        print(f"❌ 台美台股觀察預熱失敗: {e}")
+        done.append("台美台股觀察 失敗")
 
     return "、".join(done)
 
