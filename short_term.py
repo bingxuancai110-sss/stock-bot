@@ -687,6 +687,10 @@ class ShortTermService:
         self.calendar=calendar or (lambda d:d.weekday()<5)
         self.light=light;self.category=category or (lambda code,industry:'未分類')
         self.market_quotes = market_quotes
+        self.closing_quotes = {}
+        self.closing_quotes_day = None
+        self.closing_quotes_retry = 0.0
+        self.closing_quotes_running = False
         self.stock_meta={};self.scan_meta={};self.phase='等待排程';self.progress_total=MAX_POOL
         self.lock=threading.RLock(); self.cached=None; self.loaded=False
         self.running=False; self.started=0.; self.progress=0; self.error=''; self.last_try=0.
@@ -695,6 +699,40 @@ class ShortTermService:
     def intraday(self):
         n=self.now()
         return self.calendar(n.date()) and (9,0)<=(n.hour,n.minute)<(13,35)
+
+    def refresh_closing_quotes(self, trading_day, stocks):
+        try:
+            quotes = (self.market_quotes(list(stocks), stocks, False) or {}
+                      if self.safe(reserve_mb=112) else {})
+            with self.lock:
+                if self.closing_quotes_day != trading_day:
+                    self.closing_quotes = {}
+                    self.closing_quotes_day = trading_day
+                self.closing_quotes.update(quotes)
+            print('短線卡片正式收盤補價：%s/%s，資料日 %s' %
+                  (len(quotes), len(stocks), trading_day), flush=True)
+        except Exception as exc:
+            print('短線卡片正式收盤暫缺：'+type(exc).__name__, flush=True)
+        finally:
+            with self.lock:
+                self.closing_quotes_running = False
+
+    def queue_closing_quotes(self, cached, trading_day):
+        if (not self.market_quotes or self.closing_quotes_running or
+                time.monotonic() < self.closing_quotes_retry):
+            return
+        rows = cached.get('all_rows', cached.get('rows', []))
+        stocks = {row['code']: {'market': row.get('market')}
+                  for group in (rows, cached.get('short_rows', [])) for row in group
+                  if self.closing_quotes_day != trading_day or row['code'] not in self.closing_quotes}
+        if not stocks:
+            return
+        self.closing_quotes_retry = time.monotonic() + 600
+        self.closing_quotes_running = True
+        try:
+            self.executor.submit(self.refresh_closing_quotes, trading_day, stocks)
+        except RuntimeError:
+            self.closing_quotes_running = False
 
     def refresh_from_radar(self, observed_at=None):
         """Called from the existing Radar producer, independent of any viewer."""
@@ -957,6 +995,8 @@ class ShortTermService:
             for _ in range(20):
                 if self.calendar(expected):break
                 expected-=timedelta(days=1)
+            if cached and not intraday and expected == self.now().date() and self.now().hour >= 14:
+                self.queue_closing_quotes(cached, day(expected))
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
             # Viewing, polling and filtering are read-only. Only the independent
@@ -983,6 +1023,8 @@ class ShortTermService:
                 row=dict(row,signals=signal_allocations(row.get('signals',[])),
                     spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date'),direction=direction))
                 market_quote = row.pop('market_quote', None) or {}
+                if not intraday and self.closing_quotes_day == day(expected):
+                    market_quote = self.closing_quotes.get(row['code'], market_quote)
                 if (market_quote.get('date', '') >= (row.get('date') or '') and
                         (not intraday or not market_quote.get('final'))):
                     row['display_quote'] = market_quote
