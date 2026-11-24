@@ -1153,8 +1153,7 @@ class ShortTermService:
             rows=[]
             saved_rows=(cached or {}).get('short_rows',[]) if direction=='short' else (cached or {}).get('all_rows',(cached or {}).get('rows',[]))
             for row in saved_rows:
-                row=dict(row,signals=signal_allocations(row.get('signals',[])),
-                    spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date'),direction=direction))
+                row = dict(row)
                 market_quote = row.pop('market_quote', None) or {}
                 if self.card_quote_session == quote_session:
                     market_quote = self.card_quotes.get(row['code'], market_quote)
@@ -1164,10 +1163,6 @@ class ShortTermService:
                     row['display_quote'] = market_quote
                 else:
                     row['display_quote'] = {}
-                if direction=='short':
-                    labels={'entry':'首次放空100%','add':'加空首次股數50%','reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
-                    for event in row['signals']:
-                        if event.get('allocation'):event['allocation']['label']=labels[event['type']]
                 try:quote_age=(self.now()-datetime.fromisoformat(row.get('observed_at') or '')).total_seconds()
                 except (ValueError,TypeError):quote_age=999999
                 if signals_current and row.get('date')==day(expected) and (not intraday or -60<=quote_age<=1200):
@@ -1176,16 +1171,39 @@ class ShortTermService:
                     rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
                         action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
                         entry_ready=False,latest_event=None,latest_event_date=None,signal_stage='unconfirmed'))
+            # Only the selected page and alert rows need expanded trade histories.
+            # Filtering and counts can use the same immutable raw signals.
+            details = {}
+
+            def expanded(row):
+                code = row['code']
+                if code in details:
+                    return details[code]
+                signals = row.get('signals', [])
+                allocated = signal_allocations(signals)
+                if direction == 'short':
+                    labels = {'entry':'首次放空100%','add':'加空首次股數50%',
+                              'reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
+                    for event in allocated:
+                        if event.get('allocation'):
+                            event['allocation']['label'] = labels[event['type']]
+                spreads = trade_spreads(signals, row.get('price'), row.get('date'), direction=direction)
+                details[code] = (allocated, spreads)
+                return details[code]
+
             alerts=[]
+            current_rows = {row['code']: row for row in rows if row.get('current_action') != 'unconfirmed'}
             for alert in (cached or {}).get('alerts',[]) if signals_current else []:
                 if alert.get('direction','long')!=direction:continue
-                row=next((r for r in rows if r['code']==alert['code']),None)
+                row = current_rows.get(alert['code'])
+                if row is None:
+                    continue
+                allocated, spreads = expanded(row)
                 spread=alert.get('spread')
-                if spread is None and row and alert['type']=='exit':
-                    spread=next((t['spread'] for t in reversed(row['spreads']['completed']) if t['exit_date']==alert['date']),None)
-                event=next((e for e in (row or {}).get('signals',[]) if e.get('id')==alert.get('id')),None)
+                if spread is None and alert['type']=='exit':
+                    spread=next((t['spread'] for t in reversed(spreads['completed']) if t['exit_date']==alert['date']),None)
+                event=next((e for e in allocated if e.get('id')==alert.get('id')),None)
                 alerts.append(dict(alert,spread=spread,allocation=(event or {}).get('allocation')))
-            alerts=[a for a in alerts if any(r['code']==a['code'] and r.get('current_action')!='unconfirmed' for r in rows)]
             if sector=='電子':rows=[r for r in rows if r.get('sector')=='電子']
             elif sector=='非電子':rows=[r for r in rows if r.get('sector')!='電子']
             if shape in ('reversal','breakout','pullback','continuation','repair'):
@@ -1207,7 +1225,7 @@ class ShortTermService:
             recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
             for row in rows:
                 if row.get('current_action')=='unconfirmed':continue
-                dates=[b['date'] for b in row.get('bars',[])][-30:]
+                dates=[b['date'] for b in row.get('bars',[])[-30:]]
                 if not dates:continue
                 for event in row.get('signals',[]):
                     if event.get('provisional') or event.get('date','')<dates[0]:continue
@@ -1224,7 +1242,11 @@ class ShortTermService:
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             notifications = live_action_notifications(cached, self.now()) if intraday and signals_current else []
-            return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,
+            page_rows = []
+            for row in rows[offset:offset + limit]:
+                allocated, spreads = expanded(row)
+                page_rows.append(dict(row, signals=allocated, spreads=spreads))
+            return dict(ok=True,rows=page_rows,alerts=alerts,observations=new_watch,
                 notifications=notifications,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 recent_signals=recent,stage_counts=stages,
