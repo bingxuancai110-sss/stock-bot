@@ -19,6 +19,7 @@ MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
 MEMORY_RETRY_MINUTES = (2, 4, 8)
+INTRADAY_STALE_SECONDS = 20 * 60
 
 
 class ScanMemoryDeferred(RuntimeError):
@@ -41,15 +42,20 @@ def display_price(row):
     return number((row.get('display_quote') or {}).get('price', row.get('price')))
 
 
-def with_official_live_bar(history, live, now):
-    """Use freshly traded exchange OHLC with the existing historical series."""
+def live_quote_timestamp(live, now):
     if not live or live.get('final') or live.get('date') != day(now):
-        return history
+        return None
     try:
         stamp = datetime.fromisoformat(f"{live['date']}T{live['time']}").replace(tzinfo=now.tzinfo)
     except (KeyError, TypeError, ValueError):
-        return history
-    if not -60 <= (now - stamp).total_seconds() <= 1200:
+        return None
+    return stamp if -60 <= (now - stamp).total_seconds() <= INTRADAY_STALE_SECONDS else None
+
+
+def with_official_live_bar(history, live, now):
+    """Use freshly traded exchange OHLC with the existing historical series."""
+    stamp = live_quote_timestamp(live, now)
+    if not stamp:
         return history
     columns = ('close_dates', 'opens', 'highs', 'lows', 'closes', 'volumes')
     dates = history.get('close_dates') or []
@@ -845,6 +851,33 @@ class ShortTermService:
         except RuntimeError:
             self.card_quote_running = False
 
+    def monitor_intraday(self):
+        """Request work and report freshness from exchange timestamps and saved scan results."""
+        self.payload(schedule=True, quote_only=True)
+        now = self.now()
+        with self.lock:
+            cached = self.cached or {}
+            cycle = cached.get('cycle') or {}
+            scanned = cached.get('scanned', 0) if cycle.get('day') == day(now) and cached.get('intraday') else 0
+            scan_at = cached.get('live_scan_observed_at') if scanned else None
+            try:
+                scan_age = (now - datetime.fromisoformat(scan_at)).total_seconds()
+            except (TypeError, ValueError):
+                scan_age = float('inf')
+            quote_at = None
+            if self.card_quote_session == (day(now), True):
+                quote_at = max(filter(None, (live_quote_timestamp(q, now) for q in self.card_quotes.values())), default=None)
+            stale = []
+            if quote_at is None:
+                stale.append('card_quotes')
+            if not -60 <= scan_age <= INTRADAY_STALE_SECONDS:
+                stale.append('saved_scan')
+            warming_up = (now - now.replace(hour=9, minute=0, second=0, microsecond=0)).total_seconds() < INTRADAY_STALE_SECONDS
+            return dict(state=('warming_up' if warming_up else 'stalled') if stale else 'fresh',
+                        stale=stale, quote_at=quote_at.isoformat() if quote_at else None,
+                        scan_at=scan_at, scanned=scanned, total=len(cycle.get('queue', [])),
+                        building=self.running)
+
     def refresh_from_radar(self, observed_at=None):
         """Called from the existing Radar producer, independent of any viewer."""
         self.radar_at=observed_at or self.now().isoformat()
@@ -996,7 +1029,7 @@ class ShortTermService:
                     official = self.market_quotes(codes, self.stock_meta, intraday) or {}
                 except Exception as exc:
                     print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
-            pause='';time_exhausted=False
+            pause='';time_exhausted=False;live_observed=0
             for i,code in enumerate(codes):
                 if time.monotonic()>self.deadline:
                     pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
@@ -1044,6 +1077,8 @@ class ShortTermService:
                         rows_by_code.pop(code,None)
                         reason=exclusion_reason(bars,history[code],self.now())
                         excluded[reason]=excluded.get(reason,0)+1
+                    if intraday and live_fresh and bars and bars[-1]['date'] == day(self.now()):
+                        live_observed = max(live_observed, observed)
                 except Exception as exc:
                     failures+=1;failed_codes.add(code)
                     excluded['資料讀取或計算失敗']=excluded.get('資料讀取或計算失敗',0)+1
@@ -1082,6 +1117,11 @@ class ShortTermService:
                 scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
                 date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows+short_rows,asof),
                 generated_at=self.now().isoformat(),note='全市場分批詳查；部分完成會明確顯示進度。規則重播，不送出交易。')
+            if intraday:
+                live_scan_at = (datetime.fromtimestamp(live_observed, tz=self.now().tzinfo).isoformat()
+                                if live_observed else '')
+                previous_live_at = previous.get('live_scan_observed_at') if previous.get('intraday') else None
+                payload['live_scan_observed_at'] = max(live_scan_at, previous_live_at or '') or None
             # Serializing the full checkpoint briefly duplicates its data. A
             # pressure spike here must leave the last persisted cursor usable.
             if not self.safe(reserve_mb=reserve):

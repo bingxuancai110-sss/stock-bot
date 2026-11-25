@@ -1,4 +1,4 @@
-"""Trigger only; a queue acknowledgment never claims a completed market scan."""
+"""Check scheduled freshness or verify a manually triggered scan to completion."""
 import json
 import os
 import time
@@ -17,6 +17,7 @@ def call(method):
         token = json.load(response)['value']
     headers={'Authorization':'Bearer '+token}
     if method=='POST' and os.environ.get('VERIFY_COMPLETE')=='1':headers['X-Stockbot-Manual-Close']='1'
+    elif method=='POST':headers['X-Stockbot-Monitor']='1'
     req = Request(ENDPOINT, data=b'' if method=='POST' else None, headers=headers, method=method)
     with urlopen(req, timeout=45) as response:
         return json.load(response)
@@ -36,6 +37,11 @@ def main():
             result={'ok':False,'state':'unavailable','error':type(exc).__name__}
         print(json.dumps(result,ensure_ascii=False),flush=True)
         if not verify:
+            monitor = result.get('monitor')
+            if monitor:
+                if monitor['state'] in {'stalled', 'unavailable'}:
+                    raise RuntimeError('正式站資料更新停滯或無法驗證；請查看上述資料日期和最後成功時間')
+                return
             if not result.get('ok') or result.get('state') not in {'queued','fresh','outside_session'}:
                 raise RuntimeError('伺服器未接收背景研究工作，稍後排程將重試')
             return

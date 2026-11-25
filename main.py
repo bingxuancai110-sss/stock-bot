@@ -21251,6 +21251,15 @@ def job_status():
               else f"（相差 {(tw.hour - now_srv.hour) % 24} 小時，"
                    f"下方時間為伺服器時區）"),
              ""]
+    monitor_names = {"short_term": "短線", "leaderboard": "排行榜"}
+    with _market_monitor_lock:
+        monitor_status = dict(_market_monitor_reported)
+    for target, (trade_date, state, _) in monitor_status.items():
+        if trade_date == tw.date().isoformat() and state in {"stalled", "unavailable"}:
+            label = "更新停滯" if state == "stalled" else "暫時無法驗證"
+            lines.append(f"⚠️ {monitor_names[target]}：{label}，背景會繼續檢查及補跑。")
+    if len(monitor_status):
+        lines.append("")
     now_tw = taiwan_now()
     for (name, running, started, finished, secs, result,
          run_id, progress_stage, progress_index, progress_total) in rows:
@@ -47569,6 +47578,83 @@ def cron_review_refresh():
                for key,value in (cached.get("evaluations") or {}).items()})
 
 
+_market_monitor_lock = threading.Lock()
+_market_monitor_reported = {}
+
+
+def _check_market_freshness(now):
+    """Observe saved data and request recovery through existing memory guards."""
+    today = now.date()
+    clock = now.hour, now.minute
+    intraday = (9, 0) <= clock < (13, 35)
+    closing = (13, 45) <= clock < (17, 0)
+    if not (intraday or closing) or not is_twse_trading_day(today):
+        return {"state": "outside_session"}
+    if intraday:
+        status = _short_term_service.monitor_intraday()
+        return dict(status, target="short_term", date=today.isoformat())
+    if closing:
+        _schedule_daily_snapshot_recovery()
+        conn = get_db_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = 5000")
+                # Inspect the committed page and matching rank rows without decoding the graph in Python.
+                cur.execute("""
+                    SELECT NOT EXISTS (SELECT 1 FROM leaderboard_members), (
+                        SELECT s.computed_at FROM shared_data_snapshots AS s
+                        WHERE s.snapshot_key = 'leaderboard_page' AND s.data_date = %s
+                          AND s.source_meta->>'schema_version' = '6'
+                          AND jsonb_typeof(s.payload->'boards') = 'object'
+                          AND jsonb_typeof(s.payload->'graph') = 'object'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM unnest(ARRAY['short', 'long', 'season', 'month']) AS b(board)
+                              WHERE jsonb_array_length(COALESCE(s.payload->'boards'->b.board, '[]'::jsonb)) > (
+                                  SELECT COUNT(*) FROM leaderboard_rank_snapshots r
+                                  WHERE r.snapshot_date = s.data_date AND r.board = b.board)))
+                """, (today,))
+                no_members, saved_at = cur.fetchone()
+        finally:
+            release_db_connection(conn)
+        ready = no_members or saved_at is not None
+        state = "fresh" if ready else "stalled" if clock >= (14, 5) else "warming_up"
+        return {"state": state, "target": "leaderboard", "date": today.isoformat(),
+                "saved_at": saved_at.isoformat() if saved_at else None,
+                "stale": [] if ready else ["saved_leaderboard"]}
+    return {"state": "outside_session"}
+
+
+def _run_market_monitor():
+    now = taiwan_now()
+    try:
+        status = _check_market_freshness(now)
+    except Exception as exc:
+        target = "short_term" if now.hour < 13 or (now.hour == 13 and now.minute < 35) else "leaderboard"
+        status = {"state": "unavailable", "target": target, "date": now.date().isoformat(),
+                  "stale": [type(exc).__name__]}
+    target = status.get("target")
+    state = status["state"]
+    if target and state != "warming_up":
+        key = status["date"], state, tuple(status.get("stale", []))
+        with _market_monitor_lock:
+            previous = _market_monitor_reported.get(target)
+            if previous != key:
+                _market_monitor_reported[target] = key
+        if previous != key:
+            level = "ERROR" if state in {"stalled", "unavailable"} else "INFO"
+            print(f"{level} 行情更新監控 {target} {status}", flush=True)
+    return status
+
+
+def _market_monitor_tick():
+    try:
+        _run_market_monitor()
+    finally:
+        timer = threading.Timer(300, _market_monitor_tick)
+        timer.daemon = True
+        timer.start()
+
+
 @app.route("/cron/short-term-live", methods=["POST", "GET"])
 def cron_short_term_live():
     """Independent, staggered short-term scheduler; no dependency on Radar success."""
@@ -47578,6 +47664,12 @@ def cron_short_term_live():
     if not authorized(request.headers, request.args.get("token"), os.environ.get("CRON_SECRET"),
                       audience=audience, workflow=workflow):
         abort(403)
+    if request.method == "POST" and request.headers.get("X-Stockbot-Monitor") == "1":
+        status = _run_market_monitor()
+        if status["state"] != "outside_session" or taiwan_now().hour < 14:
+            if status.get("target") == "leaderboard" and status["state"] == "fresh" and taiwan_now().hour >= 14:
+                _short_term_service.payload(schedule=True, quote_only=True)
+            return jsonify(ok=status["state"] not in {"stalled", "unavailable"}, monitor=status)
     service = globals().get("_short_term_service")
     if service is None:
         return jsonify(ok=False, state="unavailable"), 503
@@ -55521,6 +55613,9 @@ _tw_research_bootstrap_timer.start()
 
 if os.environ.get("DATABASE_URL"):
     _schedule_daily_snapshot_recovery()
+    _market_monitor_timer = threading.Timer(60, _market_monitor_tick)
+    _market_monitor_timer.daemon = True
+    _market_monitor_timer.start()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 from datetime import datetime
 import os
+import threading
 import pytest
 from flask import Flask, request, jsonify, abort
 import taiex_cron_auth
@@ -39,6 +40,39 @@ def test_staggered_schedule_has_no_new_paid_service_or_shared_secret():
     assert "5,15,25,35,45,55 1-4" in workflow and "5,15,25 5" in workflow
     assert 'id-token: write' in workflow and 'CRON_SECRET' not in workflow
     assert '5,15,25,35,45,55 6-12' in workflow
+
+
+@pytest.mark.parametrize('hour,minute,open_day,saved,expected', [
+    (14, 0, True, False, 'warming_up'),
+    (14, 5, True, False, 'stalled'),
+    (14, 5, True, True, 'fresh'),
+    (14, 5, False, False, 'outside_session'),
+])
+def test_leaderboard_watchdog_checks_saved_data_after_close(hour, minute, open_day, saved, expected):
+    from unittest.mock import MagicMock
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchone.return_value = (False, datetime(2026, 11, 25, 13, 50) if saved else None)
+    ns = dict(_schedule_daily_snapshot_recovery=Mock(), _market_monitor_reported={},
+              _market_monitor_lock=threading.Lock(), is_twse_trading_day=lambda _: open_day,
+              get_db_connection=Mock(return_value=conn), release_db_connection=Mock())
+    install(ns, '_check_market_freshness')
+    now = datetime(2026, 11, 25, hour, minute)
+    assert ns['_check_market_freshness'](now)['state'] == expected
+    assert ns['_schedule_daily_snapshot_recovery'].called == open_day
+    if open_day:
+        sql, args = cur.execute.call_args.args
+        assert 's.data_date = %s' in sql and 'leaderboard_rank_snapshots' in sql
+        assert args == (now.date(),)
+
+
+def test_scheduled_verifier_fails_when_a_running_job_has_stalled(monkeypatch):
+    from scripts import trigger_short_term
+    monkeypatch.delenv('VERIFY_COMPLETE', raising=False)
+    monkeypatch.setattr(trigger_short_term, 'call', Mock(return_value={
+        'ok': False, 'monitor': {'state': 'stalled', 'building': True}}))
+    with pytest.raises(RuntimeError, match='停滯'):
+        trigger_short_term.main()
 
 
 @pytest.mark.parametrize('method,hour,trading,expected_call',[

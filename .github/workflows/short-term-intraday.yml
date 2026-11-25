@@ -1,4 +1,4 @@
-name: Independent intraday technical scan
+name: Market freshness watch and short-term scan
 on:
   schedule:
     # Taiwan 09:05–13:25; Radar's existing cron-job.org runs at :00/:10/…
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: Trigger independent short-term work
+      - name: Verify market freshness and request recovery
         env:
           VERIFY_COMPLETE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: python scripts/trigger_short_term.py
