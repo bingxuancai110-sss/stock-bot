@@ -7,7 +7,7 @@ const playwright = require(process.env.STOCKBOT_PLAYWRIGHT_PACKAGE || 'playwrigh
 const repo = path.resolve(__dirname, '../..');
 const fixtures = process.env.STOCKBOT_UI_ARTIFACTS;
 const engine = process.argv[2] || 'chromium';
-const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank', '/web/portfolio': 'home' };
+const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank', '/web/portfolio': 'home', '/web/workbench': 'workbench' };
 
 async function run() {
   const browser = await playwright[engine].launch({ timeout: 15000 });
@@ -20,6 +20,7 @@ async function run() {
     let previewRequests = 0;
     let useStagedHome = false;
     let releaseHomeDetail;
+    let releaseWorkbench;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('https://fixture.test/**', async route => {
       const url = new URL(route.request().url());
@@ -28,6 +29,10 @@ async function run() {
         return fs.existsSync(asset) ? route.fulfill({ path: asset }) : route.fulfill({ status: 404 });
       }
       if (!pages[url.pathname]) return route.fulfill({ json: { ok: true, rows: [], data: [], market_open: false } });
+      if (url.pathname === '/web/workbench' && releaseWorkbench) {
+        releaseWorkbench(route);
+        return;
+      }
       if (url.pathname === '/web/positions' && url.searchParams.get('preview') === '1') {
         assert.equal(url.searchParams.get('fast'), '1');
         assert.equal(url.searchParams.get('fragment'), '1');
@@ -173,6 +178,19 @@ async function run() {
     assert.equal(await preview.count(), 0);
     assert.equal(await page.evaluate(() => history.length), historyLength + 1);
 
+    holdPaths.add('/web/leaderboard');
+    const rankingRequested = page.waitForEvent('request', request => new URL(request.url()).pathname === '/web/leaderboard');
+    await rank.tap();
+    await rankingRequested;
+    const rankingPreview = page.locator('[data-app-preview]');
+    await rankingPreview.waitFor();
+    assert.match(await rankingPreview.innerText(), /組合績效排行/);
+    assert.equal(await page.locator('.rank-return').count(), 0);
+    await heldFragments.get('/web/leaderboard').fulfill({ path: path.join(fixtures, 'rank-fragment.html') });
+    await page.locator('.rank-return').first().waitFor();
+    assert.equal(await rankingPreview.count(), 0);
+    holdPaths.delete('/web/leaderboard');
+
     useStagedHome = true;
     const heldHomeDetail = new Promise(resolve => { releaseHomeDetail = resolve; });
     const detailRequested = page.waitForEvent('request', request => {
@@ -190,16 +208,31 @@ async function run() {
     await page.locator('#hv2').waitFor();
     await page.clock.runFor(1600);
     await secondPreviewCompleted;
+    const refreshedAfterTrade = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
+    await page.evaluate(() => document.dispatchEvent(new CustomEvent('stockbot:positionschanged')));
+    await page.clock.runFor(1600);
+    await refreshedAfterTrade;
     await page.clock.runFor(31000);
-    assert.equal(previewRequests, 2);
+    assert.equal(previewRequests, 3);
     await positions.tap();
     await content.locator('.position-card').first().waitFor();
     assert.equal(await preview.count(), 0);
     assert.deepEqual(errors, []);
+
+    const workbenchResponse = new Promise(resolve => { releaseWorkbench = resolve; });
+    const workbenchRequested = page.waitForEvent('request', request => new URL(request.url()).pathname === '/web/workbench');
+    await page.evaluate(() => document.querySelector('.app-bottom-nav a[href="/web/workbench"]').click());
+    await workbenchRequested;
+    const workbench = await workbenchResponse;
+    assert.ok(workbench.request().isNavigationRequest());
+    assert.match(await page.locator('[data-document-preview]').innerText(), /ETF 與策略研究/);
+    await workbench.fulfill({ path: path.join(fixtures, 'workbench.html') });
+    await page.locator('#stockbot-workbench').waitFor();
+    assert.equal(await page.locator('[data-document-preview]').count(), 0);
   } finally {
     await browser.close();
   }
 }
 
-run().then(() => console.log(`${engine}: mobile navigation, progress, and positions preview with retry passed`))
+run().then(() => console.log(`${engine}: cached previews, native workbench navigation, holdings refresh and retries passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });
