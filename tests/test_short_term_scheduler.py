@@ -85,7 +85,7 @@ def test_monitor_resumes_missing_close_after_evening_restart_without_a_page():
     install(ns, '_market_monitor_tick')
     ns['_market_monitor_tick']()
     service.payload.assert_called_once_with(schedule=True, quote_only=True)
-    timer.assert_called_once_with(300, ns['_market_monitor_tick'])
+    timer.assert_called_once_with(120, ns['_market_monitor_tick'])
 
 
 @pytest.mark.parametrize('method,hour,trading,expected_call',[

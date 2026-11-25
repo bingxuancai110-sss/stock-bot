@@ -138,7 +138,7 @@ def test_closing_scan_reuses_queue_and_publishes_real_current_bars_in_small_batc
     s.memory_reserve_mb = 192
     bars, history = market(75)
     s.now = lambda: now(bars).replace(hour=22)
-    s.safe.side_effect = lambda *, reserve_mb: reserve_mb <= 96
+    s.safe.side_effect = lambda *, reserve_mb: reserve_mb <= 112
     s.inputs = Mock(side_effect=AssertionError('must not rescan the market universe'))
     codes = [str(2000 + n) for n in range(10)]
     s.store.load_short_cycle.return_value = dict(queue=codes, stocks={code: {'name': code} for code in codes}, scope={})
@@ -147,10 +147,24 @@ def test_closing_scan_reuses_queue_and_publishes_real_current_bars_in_small_batc
     s.build()
     assert s.cached['date'] == bars[-1]['date'] and s.cached['cycle']['cursor'] == 8
     assert not s.cached['scope']['deep_complete'] and s.in_retry_window((bars[-1]['date'], False))
+    assert not s.running
+    s.executor.submit.assert_not_called()
     assert all(call.kwargs['force_refresh'] for call in s.quote.call_args_list)
     s.build()
     assert s.cached['cycle']['cursor'] == 10 and s.cached['scope']['deep_complete']
     s.inputs.assert_not_called()
+
+
+def test_short_scan_yields_to_inflight_background_preload():
+    s = service()
+    s.running = True
+    s.background_slot = Mock()
+    s.background_slot.acquire.return_value = False
+    s.build()
+    assert not s.running
+    assert '背景預載' in s.error
+    s.store.save.assert_not_called()
+    s.background_slot.release.assert_not_called()
 
 
 def test_closing_scan_cannot_publish_a_new_date_from_an_intraday_queue_alone():
