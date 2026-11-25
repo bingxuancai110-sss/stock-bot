@@ -21199,6 +21199,8 @@ def _recover_daily_snapshot_after_restart():
     # Render/cron health probes and LINE/API/static requests must stay side-effect
     # free: a /health ping used to start this heavy recovery job after a restart.
     path = (request.path or "").strip("/")
+    if path == "web/positions" and request.args.get("preview") == "1" and request.args.get("fast") == "1" and request.args.get("fragment") == "1":
+        return None
     is_page_navigation = (
         request.method == "GET" and
         (not path or (path.startswith("web/") and len(path.split("/")) == 2))
@@ -28695,7 +28697,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261125-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261125-4">
+<link rel="stylesheet" href="/static/app-experience.css?v=20261125-5">
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
@@ -28954,6 +28956,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavBusy = false;
   var appNavSeq = 0;
   var appNavController = null;
+  var positionsPreview = null, previewTimer = 0, previewRequest = null, previewAttempted = false;
   function appViewKey(href) {{
     var url = new URL(href, window.location.href);
     ['fragment','_nav','fast'].forEach(function(key) {{ url.searchParams.delete(key); }});
@@ -29007,6 +29010,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }});
   }};
   function upgradePreviewFragment(pathname, search) {{
+    // The staged document already owns its detail request, including retries.
+    if (appContent.querySelector('#detail-status')) return;
     // 片段導覽沒有「先給預覽、再補完整」的機制——拿到什麼就顯示什麼。
     // 首次整頁載入的殼層有這套（finish() 裡的 detail 請求），
     // 但那段抓的是 #content，片段導覽用的是 #app-page-content，走不到。
@@ -29133,9 +29138,63 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     finishTopNavLoading();
   }}
 
+  function clearPositionsPreload() {{
+    window.clearTimeout(previewTimer);
+    previewTimer = 0;
+    if (previewRequest) previewRequest.abort();
+    previewRequest = null;
+    positionsPreview = null;
+  }}
+
+  function schedulePositionsPreload() {{
+    var connection = navigator.connection;
+    if (previewAttempted || previewTimer || appNavBusy || document.hidden || !window.AbortController ||
+        location.pathname !== '/web/portfolio' || !appContent || !appContent.querySelector('#hv2') ||
+        appContent.querySelector('.daily-fast-sync,[data-fast-preview]') ||
+        (connection && (connection.saveData || /2g$/.test(connection.effectiveType || '')))) return;
+    previewTimer = window.setTimeout(function() {{
+      previewTimer = 0;
+      if (appNavBusy || document.hidden || location.pathname !== '/web/portfolio') return;
+      var tab = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="/web/positions"]');
+      if (!tab) return;
+      var url = new URL(tab.href);
+      var key = appViewKey(url.href), expiresAt = performance.now() + 30000;
+      url.searchParams.set('fragment', '1');
+      url.searchParams.set('fast', '1');
+      url.searchParams.set('preview', '1');
+      var controller = new AbortController();
+      previewAttempted = true;
+      previewRequest = controller;
+      var deadline = window.setTimeout(function() {{ controller.abort(); }}, 5000);
+      fetch(url, {{credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal}})
+        .then(function(response) {{ return response.ok && !response.redirected ? response.text() : ''; }})
+        .then(function(fragment) {{
+          if (previewRequest === controller && fragment.includes('data-positions-preview') && !fragment.includes('AUTH_EXPIRED')) {{
+            positionsPreview = {{key:key, fragment:fragment, expiresAt:expiresAt}};
+          }}
+        }})
+        .catch(function() {{ /* Use normal navigation when the optional preview is unavailable. */ }})
+        .finally(function() {{
+          window.clearTimeout(deadline);
+          if (previewRequest === controller) previewRequest = null;
+        }});
+    }}, 1400);
+  }}
+  document.addEventListener('stockbot:pagecontentready', schedulePositionsPreload);
+  document.addEventListener('stockbot:homedetailready', schedulePositionsPreload);
+  document.addEventListener('DOMContentLoaded', schedulePositionsPreload, {{once:true}});
+  document.addEventListener('visibilitychange', function() {{
+    if (document.hidden) clearPositionsPreload(); else schedulePositionsPreload();
+  }});
+  window.addEventListener('pagehide', clearPositionsPreload);
+
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     var target = new URL(rawHref, window.location.href);
+    var preview = target.pathname === '/web/positions' && !appNavBusy && positionsPreview &&
+        positionsPreview.key === appViewKey(target.href) && positionsPreview.expiresAt > performance.now() ? positionsPreview.fragment : '';
+    clearPositionsPreload();
+    previewAttempted = false;
     if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (!appRouteKeys[target.pathname]) {{
       if (appNavBusy) cancelAppPageRequest();
@@ -29175,11 +29234,24 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var navStartedAt = performance.now();
     var tabDirection = appTabDirection(target.pathname);
     var routeTitle = appTitles[target.pathname] || '頁面';
+    if (preview) {{
+      var previewUrl = new URL(target.href);
+      previewUrl.searchParams.delete('fragment');
+      document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
+      appContent.innerHTML = preview;
+      if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', previewUrl.pathname + previewUrl.search);
+      pushState = false;
+      setAppNavState(target.pathname);
+      appCurrentViewKey = appViewKey(previewUrl.href);
+      window.scrollTo({{top:0, behavior:'instant'}});
+    }}
     if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
     var routeLoadTimedOut = false;
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
+    var previewStatus = target.pathname === '/web/positions' && appContent.querySelector('.positions-preview-status');
+    if (previewStatus) previewStatus.textContent = '正在載入完整持股與行情…';
     var retry = function() {{ switchAppPage(retryHref, pushState); }};
     if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{ controller.abort(); }} : null, retry);
     var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, controller ? {{signal:controller.signal}} : {{}}))
@@ -29239,6 +29311,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .catch(function(error) {{
         if (navSeq !== appNavSeq) return;
+        if (previewStatus) previewStatus.textContent = '完整持股與行情尚未載入。';
         if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '載入逾時，原畫面和資料仍保留。' : '頁面暫時無法開啟，原畫面和資料仍保留。', retry);
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
           if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -29313,7 +29386,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     e.preventDefault();
     if (appContent && appLink.closest('.app-bottom-nav') && appLink.matches('[aria-current="page"]') &&
         appLink.pathname === location.pathname && appLink.pathname === appCurrentViewKey.split('?')[0]) {{
-      if (appNavBusy) cancelAppPageRequest();
+      var showingPreview = appContent.querySelector('[data-positions-preview]');
+      if (showingPreview && !appNavBusy) switchAppPage(appLink.href, false);
+      if (!showingPreview && appNavBusy) cancelAppPageRequest();
       window.scrollTo({{top:0, behavior:prefersReducedMotion() ? 'instant' : 'smooth'}});
       return;
     }}
@@ -29891,9 +29966,13 @@ def render_loading_shell(title, nav_active, stages, note="", staged=False):
               return r.text();
             }})
             .then(function (detailHtml) {{
+              if (!content.isConnected) return;
               content.innerHTML = detailHtml;
               executeFragmentScripts(content);
               var pending = content.querySelector('[data-screener-pending="1"]');
+              if (!pending && location.pathname === '/web/portfolio') {{
+                document.dispatchEvent(new CustomEvent('stockbot:homedetailready'));
+              }}
               if (pending && detailAttempt < 24) {{
                 if (status) {{
                   status.style.display = 'block';
@@ -32376,10 +32455,25 @@ def web_premarket(uid):
 
 
 
-def render_positions_fast_summary(uid):
+def render_positions_fast_summary(uid, preview=False):
     """持股頁首屏只讀資料庫，避免等待外部報價才顯示已有持股。
 """
-    positions = merge_positions(get_positions(uid))
+    saved = get_positions(uid)
+    if preview:
+        # The background response needs neither live quotes nor the shared name map.
+        codes = list(dict.fromkeys(str(row.get("code") or "").strip() for row in saved))
+        codes = [code for code in codes if code]
+        rows = "".join(
+            f'<li><b>{html.escape(STOCK_NAME_MAP.get(code, code))}</b><span>{html.escape(code)}</span></li>'
+            for code in codes[:12]
+        )
+        tail = f'<p class="positions-preview-more">其餘 {len(codes) - 12} 檔會在完整頁顯示</p>' if len(codes) > 12 else ""
+        return f'''<section class="positions-preload-preview" data-positions-preview>
+  <h2>我的持股</h2>
+  <p class="positions-preview-status" role="status">正在載入完整持股與行情…</p>
+  {f'<ul>{rows}</ul>' if rows else ''}{tail}
+</section>'''
+    positions = merge_positions(saved)
     style = '''<style>
 .position-fast-card{background:#fff;border:1px solid #E5E5EA;border-radius:12px;padding:16px;margin:12px 0;box-shadow:0 3px 14px rgba(35,39,35,.05)}
 .position-fast-card h2{margin:0 0 12px;font-size:20px}
@@ -32439,7 +32533,7 @@ def web_positions(uid):
             staged=True)
 
     if request.method == "GET" and wants_fragment() and request.args.get("fast") == "1":
-        return respond_page("持股", render_positions_fast_summary(uid), "positions")
+        return respond_page("持股", render_positions_fast_summary(uid, preview=request.args.get("preview") == "1"), "positions")
 
     # V255：先以使用者／日期／查詢狀態查片段快取，避免每次切回持股都先等 positions SQL。
     # 持股相關 POST 會在上方主動失效此快取；即時行情仍由頁面內的輕量行情 API 更新。

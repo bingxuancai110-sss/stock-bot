@@ -70,6 +70,9 @@ root.joinpath('settings-fragment.html').write_text(settings,encoding='utf-8');ro
 ns.update(render_quote_block=lambda:'',request=type('Request',(),{'args':{},'path':'/web/positions'})())
 n=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_loading_shell');compile_node(n)
 root.joinpath('loading.html').write_text(ns['render_loading_shell']('持股','positions',['讀取資料'],staged=False),encoding='utf-8')
+ns['request'].path = '/web/portfolio'
+root.joinpath('home-loading.html').write_text(ns['render_loading_shell']('今日','portfolio',['讀取資料'],staged=True),encoding='utf-8')
+ns['request'].path = '/web/positions'
 # Homepage: real contribution/holdings renderers with synthetic data.
 home_fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='render_daily_home_top')
 home_source=''.join(lines[home_fn.lineno-1:home_fn.end_lineno]);home_ast=ast.parse(home_source).body[0]
@@ -135,6 +138,11 @@ market_ns['get_realtime_stocks_bulk']=lambda codes,**kwargs:{code:dict(close=100
 root.joinpath('market-board.html').write_text(market_ns['web_market']('fixture-user'),encoding='utf-8')
 # Extract scripts only after every page has been generated. A fresh artifact
 # directory must not depend on HTML left over from an earlier renderer run.
+preview_ns = dict(ns, get_positions=lambda _: positions,
+                  STOCK_NAME_MAP={str(row['code']): row['name'] for row in positions})
+preview_fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'render_positions_fast_summary')
+compile_node(preview_fn, preview_ns)
+root.joinpath('positions-preview.html').write_text(preview_ns['render_positions_fast_summary']('fixture-user', preview=True), encoding='utf-8')
 for name in ['positions','rank','settings','loading','home','workbench','more','us_rotation','market']:
  scripts=re.findall(r'<script(?![^>]*src=)[^>]*>(.*?)</script>',root.joinpath(name+'.html').read_text(encoding='utf-8'),re.S)
  root.joinpath(name+'.js').write_text('\n'.join(scripts),encoding='utf-8')

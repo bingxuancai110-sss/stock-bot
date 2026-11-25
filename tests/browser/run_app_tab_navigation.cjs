@@ -7,7 +7,7 @@ const playwright = require(process.env.STOCKBOT_PLAYWRIGHT_PACKAGE || 'playwrigh
 const repo = path.resolve(__dirname, '../..');
 const fixtures = process.env.STOCKBOT_UI_ARTIFACTS;
 const engine = process.argv[2] || 'chromium';
-const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank' };
+const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank', '/web/portfolio': 'home' };
 
 async function run() {
   const browser = await playwright[engine].launch({ timeout: 15000 });
@@ -16,6 +16,10 @@ async function run() {
     const errors = [];
     const fragments = [];
     const holdPaths = new Set();
+    const heldFragments = new Map();
+    let previewRequests = 0;
+    let useStagedHome = false;
+    let releaseHomeDetail;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('https://fixture.test/**', async route => {
       const url = new URL(route.request().url());
@@ -24,10 +28,26 @@ async function run() {
         return fs.existsSync(asset) ? route.fulfill({ path: asset }) : route.fulfill({ status: 404 });
       }
       if (!pages[url.pathname]) return route.fulfill({ json: { ok: true, rows: [], data: [], market_open: false } });
+      if (url.pathname === '/web/positions' && url.searchParams.get('preview') === '1') {
+        assert.equal(url.searchParams.get('fast'), '1');
+        assert.equal(url.searchParams.get('fragment'), '1');
+        previewRequests += 1;
+        return route.fulfill({ path: path.join(fixtures, 'positions-preview.html') });
+      }
       const fragment = url.searchParams.has('fragment');
+      if (url.pathname === '/web/portfolio' && useStagedHome) {
+        if (!fragment) return route.fulfill({ path: path.join(fixtures, 'home-loading.html') });
+        if (url.searchParams.get('fast') === '1') {
+          return route.fulfill({ contentType: 'text/html', body: '<section class="daily-fast-sync">等待首頁完整資料</section>' });
+        }
+        if (url.searchParams.get('detail') === '1') {
+          releaseHomeDetail(route);
+          return;
+        }
+      }
       if (fragment) {
         fragments.push(url.pathname);
-        if (holdPaths.has(url.pathname)) return;
+        if (holdPaths.has(url.pathname)) { heldFragments.set(url.pathname, route); return; }
       }
       const name = pages[url.pathname] + (fragment ? '-fragment' : '') + '.html';
       return route.fulfill({ path: path.join(fixtures, name) });
@@ -119,11 +139,67 @@ async function run() {
     await page.evaluate(() => scrollTo(0, 400));
     await page.clock.runFor(300);
     assert.equal(await page.locator('body').evaluate(el => el.classList.contains('app-chrome-compact')), false);
+
+    await page.goto('https://fixture.test/web/portfolio');
+    assert.equal(previewRequests, 0);
+    const previewCompleted = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
+    await page.clock.runFor(1600);
+    await previewCompleted;
+    assert.equal(previewRequests, 1);
+    await page.clock.runFor(200);
+    assert.equal(await page.locator('[data-positions-preview]').count(), 0);
+    holdPaths.add('/web/positions');
+    const historyLength = await page.evaluate(() => history.length);
+    const requestedPositions = page.waitForEvent('request', request => {
+      const url = new URL(request.url());
+      return url.pathname === '/web/positions' && !url.searchParams.has('preview');
+    });
+    await positions.tap();
+    await requestedPositions;
+    await page.waitForURL('**/web/positions');
+    const preview = page.locator('[data-positions-preview]');
+    assert.ok(await preview.isVisible());
+    assert.ok(await preview.locator('li').count());
+    assert.equal(await preview.locator('form').count(), 0);
+    assert.doesNotMatch(await preview.innerText(), /成本|股數|損益/);
+    assert.equal(await positions.getAttribute('aria-current'), 'page');
+    assert.equal(await content.getAttribute('aria-busy'), 'true');
+    await heldFragments.get('/web/positions').fulfill({ status: 503, body: 'temporary error' });
+    await page.locator('.ui-feedback-route[data-state=error]').waitFor();
+    assert.match(await preview.innerText(), /尚未載入/);
+    holdPaths.delete('/web/positions');
+    await page.getByRole('button', { name: '重試載入' }).click();
+    await content.locator('.position-card').first().waitFor();
+    assert.equal(await preview.count(), 0);
+    assert.equal(await page.evaluate(() => history.length), historyLength + 1);
+
+    useStagedHome = true;
+    const heldHomeDetail = new Promise(resolve => { releaseHomeDetail = resolve; });
+    const detailRequested = page.waitForEvent('request', request => {
+      const url = new URL(request.url());
+      return url.pathname === '/web/portfolio' && url.searchParams.get('detail') === '1';
+    });
+    await page.goto('https://fixture.test/web/portfolio');
+    await page.clock.runFor(100);
+    await detailRequested;
+    const homeDetail = await heldHomeDetail;
+    await page.clock.runFor(1600);
+    assert.equal(previewRequests, 1);
+    const secondPreviewCompleted = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
+    await homeDetail.fulfill({ path: path.join(fixtures, 'home-fragment.html') });
+    await page.locator('#hv2').waitFor();
+    await page.clock.runFor(1600);
+    await secondPreviewCompleted;
+    await page.clock.runFor(31000);
+    assert.equal(previewRequests, 2);
+    await positions.tap();
+    await content.locator('.position-card').first().waitFor();
+    assert.equal(await preview.count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }
 }
 
-run().then(() => console.log(`${engine}: both bars shrink and grow, loading progress, back and reduced motion passed`))
+run().then(() => console.log(`${engine}: mobile navigation, progress, and positions preview with retry passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });
