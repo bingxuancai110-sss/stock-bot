@@ -756,8 +756,9 @@ class ShortTermService:
         return self.calendar(n.date()) and (9,0)<=(n.hour,n.minute)<(13,35)
 
     def scan_reserve(self, intraday):
-        # The intraday scan works in small batches and checks between symbols.
-        return min(self.memory_reserve_mb, 96) if intraday else self.memory_reserve_mb
+        # The web process can be serving requests while a checkpoint is encoded.
+        # Leave enough room for those allocations, including between samples.
+        return min(self.memory_reserve_mb, 144) if intraday else self.memory_reserve_mb
 
     def in_retry_window(self, session):
         today, intraday = session
@@ -1074,6 +1075,10 @@ class ShortTermService:
                 scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
                 date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows+short_rows,asof),
                 generated_at=self.now().isoformat(),note='全市場分批詳查；部分完成會明確顯示進度。規則重播，不送出交易。')
+            # Serializing the full checkpoint briefly duplicates its data. A
+            # pressure spike here must leave the last persisted cursor usable.
+            if not self.safe(reserve_mb=self.memory_reserve_mb):
+                raise ScanMemoryDeferred('記憶體餘裕不足，下次從已保存的進度繼續')
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
