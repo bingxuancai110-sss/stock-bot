@@ -29010,6 +29010,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }});
   }};
   function upgradePreviewFragment(pathname, search) {{
+    // The staged document already owns its detail request, including retries.
+    if (appContent.querySelector('#detail-status')) return;
     // 片段導覽沒有「先給預覽、再補完整」的機制——拿到什麼就顯示什麼。
     // 首次整頁載入的殼層有這套（finish() 裡的 detail 請求），
     // 但那段抓的是 #content，片段導覽用的是 #app-page-content，走不到。
@@ -29393,10 +29395,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     switchAppPage(appLink.href, true);
   }}, true);
   window.addEventListener('popstate', function() {{
-    if (appViewKey(window.location.href) === appCurrentViewKey) {{
-      if (appNavBusy) cancelAppPageRequest();
-      return;
-    }}
     if (appRouteKeys[window.location.pathname]) {{
       switchAppPage(window.location.href, false);
     }}
