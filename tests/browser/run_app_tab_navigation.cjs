@@ -221,11 +221,15 @@ async function run() {
 
     const workbenchResponse = new Promise(resolve => { releaseWorkbench = resolve; });
     const workbenchRequested = page.waitForEvent('request', request => new URL(request.url()).pathname === '/web/workbench');
-    await page.evaluate(() => document.querySelector('.app-bottom-nav a[href="/web/workbench"]').click());
+    const workbenchPreview = await page.evaluate(() => {
+      document.querySelector('.app-bottom-nav a[href="/web/workbench"]').click();
+      return document.querySelector('[data-document-preview]')?.textContent;
+    });
+    await page.clock.runFor(120);
     await workbenchRequested;
     const workbench = await workbenchResponse;
     assert.ok(workbench.request().isNavigationRequest());
-    assert.match(await page.locator('[data-document-preview]').innerText(), /ETF 與策略研究/);
+    assert.match(workbenchPreview, /ETF 與策略研究/);
     await workbench.fulfill({ path: path.join(fixtures, 'workbench.html') });
     await page.locator('#stockbot-workbench').waitFor();
     assert.equal(await page.locator('[data-document-preview]').count(), 0);

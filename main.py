@@ -29260,17 +29260,28 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
       if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
       if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
+      target.searchParams.delete('fragment');
+      target.searchParams.set('_nav', '1');
+      function openWorkbench() {{
+        if (pushState) window.location.assign(target.pathname + target.search);
+        else window.location.replace(target.pathname + target.search);
+      }}
       if (prepared) {{
         var documentPreview = prepared.cloneNode(true);
         documentPreview.dataset.documentPreview = '';
         appContent.prepend(documentPreview);
         appContent.classList.add('app-document-preview');
-        window.scrollTo({{top:0, behavior:'instant'}});
+        var opening = false;
+        function openAfterPaint() {{
+          if (opening || !documentPreview.isConnected) return;
+          opening = true;
+          openWorkbench();
+        }}
+        requestAnimationFrame(function() {{ requestAnimationFrame(openAfterPaint); }});
+        window.setTimeout(openAfterPaint, 100);
+      }} else {{
+        openWorkbench();
       }}
-      target.searchParams.delete('fragment');
-      target.searchParams.set('_nav', '1');
-      if (pushState) window.location.assign(target.pathname + target.search);
-      else window.location.replace(target.pathname + target.search);
       return;
     }}
     // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
