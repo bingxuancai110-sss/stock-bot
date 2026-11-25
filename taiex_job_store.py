@@ -38,6 +38,22 @@ class SnapshotStore:
         finally:
             self.release(conn)
 
+    def load_short_cycle(self, key, session_day, selection_version):
+        """Read the saved candidate queue without loading all strategy charts."""
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout=5000")
+                cur.execute("""SELECT payload->'cycle'->'queue', payload->'cycle'->'stocks', payload->'scope'
+                    FROM shared_data_snapshots WHERE snapshot_key=%s
+                      AND payload->'cycle'->>'day'=%s AND payload->>'selection_version'=%s""",
+                    (key, session_day, str(selection_version)))
+                row = cur.fetchone()
+            conn.commit()
+            return dict(zip(('queue', 'stocks', 'scope'), row)) if row else None
+        finally:
+            self.release(conn)
+
     def feature_enabled(self):
         conn = self.connect()
         try:
