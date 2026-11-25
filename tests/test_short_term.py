@@ -223,6 +223,15 @@ def test_interrupted_closing_batch_keeps_visible_snapshot_until_lease_expires():
     s.close_batch_lease.finish_close_batch.assert_not_called()
 
 
+def test_closing_startup_grace_keeps_page_readable_without_queuing_work():
+    s = service()
+    s.close_not_before = float('inf')
+    s.payload(schedule=True, quote_only=True)
+    s.store.load.assert_not_called()
+    assert s.payload(refresh=True)['ok']
+    s.executor.submit.assert_not_called()
+
+
 def test_closing_scan_cannot_publish_a_new_date_from_an_intraday_queue_alone():
     s = service()
     bars, _ = market(75)

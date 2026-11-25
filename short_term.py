@@ -752,7 +752,8 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None
 class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
-                 market_quotes=None, background_slot=None, close_batch_lease=None):
+                 market_quotes=None, background_slot=None, close_batch_lease=None,
+                 close_startup_grace=0):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
@@ -761,6 +762,7 @@ class ShortTermService:
         self.market_quotes = market_quotes
         self.background_slot = background_slot
         self.close_batch_lease = close_batch_lease
+        self.close_not_before = time.monotonic() + close_startup_grace if close_startup_grace else 0
         self.card_quotes = {}
         self.card_quote_session = None
         self.card_quote_retry = 0.0
@@ -1239,6 +1241,12 @@ class ShortTermService:
     def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False):
         with self.lock:
             intraday=self.intraday()
+            close_starting = not intraday and self.close_not_before and time.monotonic() < self.close_not_before
+            if close_starting and quote_only:
+                return
+            if quote_only and not self.loaded and not self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
+                self.defer_for_memory((day(self.now()), intraday))
+                return
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
                 loaded_at = time.perf_counter()
                 saved=self.store.load(KEY+(':intraday' if intraday else ''),max_age_seconds=30*86400)
@@ -1266,7 +1274,7 @@ class ShortTermService:
                 if self.calendar(expected):break
                 expected-=timedelta(days=1)
             quote_session = (day(expected), intraday)
-            if cached and expected == self.now().date() and (intraday or self.now().hour >= 14):
+            if cached and not quote_only and expected == self.now().date() and (intraday or self.now().hour >= 14):
                 self.queue_card_quotes(cached, quote_session)
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
@@ -1276,7 +1284,7 @@ class ShortTermService:
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
             scan_session = (day(self.now()), intraday)
             retry_pending = self.memory_retry_session == scan_session and self.memory_retry_at
-            if (refresh or schedule and (not cached or stale or unfinished)) and not retry_pending and not self.running and time.monotonic()-self.last_try>60:
+            if (refresh or schedule and (not cached or stale or unfinished)) and not close_starting and not retry_pending and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
                 if self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
@@ -1412,7 +1420,8 @@ class ShortTermService:
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),
                 excluded=(cached or {}).get('excluded',{}),
-                error=self.error,note=(cached or {}).get('note','全市場分批詳查・依型態與趨勢排列，可分頁查看全部候選。')))
+                error=self.error or ('服務剛恢復，稍後自動續掃' if close_starting and unfinished else ''),
+                note=(cached or {}).get('note','全市場分批詳查・依型態與趨勢排列，可分頁查看全部候選。')))
 
 
 def create_blueprint(*, login, service):

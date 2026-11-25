@@ -55598,6 +55598,7 @@ _short_term_service = ShortTermService(
     market_quotes=_short_term_display_quotes,
     background_slot=_web_preload_lock,
     close_batch_lease=_short_term_snapshot_store,
+    close_startup_grace=300,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
