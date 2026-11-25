@@ -1,6 +1,20 @@
 /* Shared visual hierarchy and motion. No data, pricing or transaction rules. */
 :root{--app-motion:180ms;--app-ease:cubic-bezier(.2,.8,.2,1)}
 
+#stockbot-app .positions-preload-preview{
+  padding:16px 18px;border:1px solid var(--sb-app-line,#dce5e3);border-radius:18px;
+  background:var(--sb-app-surface,#fff);
+}
+#stockbot-app .positions-preload-preview h2{margin:0 0 4px;font-size:19px}
+#stockbot-app .positions-preload-preview p{margin:0;color:var(--sb-app-muted,#687d89);font-size:13px}
+#stockbot-app .positions-preload-preview ul{list-style:none;margin:12px 0 0;padding:0}
+#stockbot-app .positions-preload-preview li{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;
+  border-top:1px solid var(--sb-app-line,#dce5e3);
+}
+#stockbot-app .positions-preload-preview li span{color:var(--sb-app-muted,#687d89);font-variant-numeric:tabular-nums}
+#stockbot-app .positions-preload-preview .positions-preview-more{margin-top:10px}
+
 /* The report title and its action share a single native disclosure control. */
 #stockbot-app #app-page-content .home-journal-disclosure>summary {
   display:flex;align-items:center;justify-content:space-between;gap:10px;
