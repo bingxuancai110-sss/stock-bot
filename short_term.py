@@ -4,11 +4,14 @@ All replay decisions use an expanding prefix and institutional observations stri
 before the bar date (daily reports are unavailable at that day's closing auction).
 These are model signals, never asserted fills or measured investment performance.
 """
+from base64 import b64decode, b64encode
 from datetime import date, datetime, timedelta, timezone
+import json
 import math
 import copy
 import threading
 import time
+import zlib
 from flask import Blueprint, jsonify, request
 from technical_space import long_space
 
@@ -26,6 +29,15 @@ INTRADAY_STALE_SECONDS = 20 * 60
 
 class ScanMemoryDeferred(RuntimeError):
     """The shared worker needs to leave memory available for web requests."""
+
+
+def compact_chart(row):
+    """Keep full chart history compact until its card is requested."""
+    bars = row.pop('bars', None)
+    if bars:
+        row['recent_bar_start'] = bars[-30:][0]['date']
+        encoded = json.dumps(bars, separators=(',', ':')).encode()
+        row['chart_data'] = b64encode(zlib.compress(encoded, level=1)).decode('ascii')
 
 
 def position_group(row):
@@ -1112,6 +1124,7 @@ class ShortTermService:
                     if short_row:
                         short_row['market_quote'] = official.get(code)
                         short_row.update(sector=(self.stock_meta.get(code) or {}).get('sector','未分類'),market=(self.stock_meta.get(code) or {}).get('market','未確認'),observed_at=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None,computed_at=self.now().isoformat())
+                        compact_chart(short_row)
                         short_by_code[code]=short_row
                     else:short_by_code.pop(code,None)
                     row=analyse(code,names[code],q,history[code],self.now(),intraday=intraday and live_fresh)
@@ -1121,6 +1134,7 @@ class ShortTermService:
                         row['market']=(self.stock_meta.get(code) or {}).get('market','未確認')
                         row['observed_at']=datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).isoformat() if observed else None
                         row['computed_at']=self.now().isoformat()
+                        compact_chart(row)
                         rows_by_code[code]=row
                     else:
                         rows_by_code.pop(code,None)
@@ -1209,12 +1223,20 @@ class ShortTermService:
         with self.lock:
             intraday=self.intraday()
             if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
+                loaded_at = time.perf_counter()
                 saved=self.store.load(KEY+(':intraday' if intraday else ''),max_age_seconds=30*86400)
-                self.cached=saved.get('payload') if saved else None
-                if intraday and not self.cached:
+                if intraday and not saved:
                     saved = self.store.load(KEY, max_age_seconds=30*86400)
-                    self.cached = saved.get('payload') if saved else None
+                cached = saved.get('payload') if saved else None
+                if cached:
+                    for group in ('rows', 'all_rows', 'short_rows'):
+                        for row in cached.get(group, []):
+                            compact_chart(row)
+                self.cached = cached
                 self.loaded=True;self.cache_mode=intraday
+                if cached:
+                    print('短線快照載入：%s，已詳查 %s 檔，%.2f 秒' %
+                          (cached.get('date'), cached.get('scanned', 0), time.perf_counter() - loaded_at), flush=True)
             cached=self.cached
             generated=(cached or {}).get('generated_at','')
             try:
@@ -1328,10 +1350,12 @@ class ShortTermService:
             recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
             for row in rows:
                 if row.get('current_action')=='unconfirmed':continue
-                dates=[b['date'] for b in row.get('bars',[])[-30:]]
-                if not dates:continue
+                recent_start = row.get('recent_bar_start')
+                if not recent_start and row.get('bars'):
+                    recent_start = row['bars'][-30:][0]['date']
+                if not recent_start:continue
                 for event in row.get('signals',[]):
-                    if event.get('provisional') or event.get('date','')<dates[0]:continue
+                    if event.get('provisional') or event.get('date','')<recent_start:continue
                     if event['type']=='entry':
                         recent['entries']+=1
                         recent['last_entry_date']=max(recent['last_entry_date'] or '',event['date'])
@@ -1348,7 +1372,11 @@ class ShortTermService:
             page_rows = []
             for row in rows[offset:offset + limit]:
                 allocated, spreads = expanded(row)
-                page_rows.append(dict(row, signals=allocated, spreads=spreads))
+                card = dict(row, signals=allocated, spreads=spreads)
+                chart_data = card.pop('chart_data', None)
+                if chart_data:
+                    card['bars'] = json.loads(zlib.decompress(b64decode(chart_data)))
+                page_rows.append(card)
             return dict(ok=True,rows=page_rows,alerts=alerts,observations=new_watch,
                 notifications=notifications,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
@@ -1378,7 +1406,8 @@ def create_blueprint(*, login, service):
         try:
             result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'),price_range=request.args.get('price_range','all'),sort=request.args.get('sort','signal'))
             response=jsonify(result)
-        except Exception:
+        except Exception as exc:
+            print('短線頁讀取暫緩：' + type(exc).__name__, flush=True)
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')
             response.status_code=503
         response.headers['Cache-Control']='no-store'

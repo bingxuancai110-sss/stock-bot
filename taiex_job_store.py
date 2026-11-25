@@ -3,13 +3,16 @@ import json
 
 
 class SnapshotStore:
-    def __init__(self, connect, release):
+    def __init__(self, connect, release, *, load_timeout_ms=None):
         self.connect, self.release = connect, release
+        self.load_timeout_ms = load_timeout_ms
 
     def load(self, key, max_age_seconds=86400):
         conn = self.connect()
         try:
             with conn.cursor() as cur:
+                if self.load_timeout_ms:
+                    cur.execute("SELECT set_config('statement_timeout', %s, true)", (str(self.load_timeout_ms),))
                 cur.execute("""SELECT data_date,computed_at,payload,source_meta FROM shared_data_snapshots
                     WHERE snapshot_key=%s AND computed_at >= NOW() - (%s * INTERVAL '1 second')""", (key, max_age_seconds))
                 row = cur.fetchone()

@@ -4549,7 +4549,7 @@ def web_login_required(view):
         if not _web_preload_lock.acquire(blocking=False):
             return "", 429
         try:
-            if not _background_work_memory_safe(reserve_mb=120):
+            if not _background_work_memory_safe(reserve_mb=176):
                 return "", 429
             return view(uid, *args, **kwargs)
         finally:
@@ -20724,15 +20724,18 @@ def cron_push_leaderboard_settlement():
     return "排行榜結算通知已改為管理員手動發送，請至管理員後台 → 排行榜結算通知。", 410
 
 
-def _taiex_reduction_connect():
+def _taiex_reduction_connect(connect_timeout=10):
     # Task-owned connections are never returned to the global website pool.
     return psycopg2.connect(database=_url.path[1:], user=_url.username, password=_url.password,
         host=_ipv4_addr, port=_url.port, sslmode='require', options='-c timezone=Asia/Taipei',
-        connect_timeout=10, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
+        connect_timeout=connect_timeout, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3)
 
 
-def _taiex_reduction_store():
+def _taiex_reduction_store(*, short_term=False):
     from taiex_job_store import SnapshotStore
+    if short_term:
+        return SnapshotStore(lambda: _taiex_reduction_connect(connect_timeout=4),
+                             lambda conn: conn.close(), load_timeout_ms=4000)
     return SnapshotStore(_taiex_reduction_connect, lambda conn: conn.close())
 
 
@@ -28725,7 +28728,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
-<script defer src="/static/short-term.js?v=20261124-2"></script>
+<script defer src="/static/short-term.js?v=20261125-3"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -29217,6 +29220,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   function schedulePagePreload() {{
     var connection = navigator.connection;
     if (preloadTimer || preloadJob || appNavBusy || document.hidden || !window.AbortController ||
+        (appContent && appContent.querySelector('.wb-short-active')) ||
         !appContent || appContent.querySelector('.daily-fast-sync,[data-fast-preview]') ||
         appContent.querySelector('#loading:not(.is-complete)') ||
         (location.pathname === '/web/portfolio' && !appContent.querySelector('#hv2,.welcome-editorial')) ||
@@ -29224,7 +29228,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if (!pagePreloadCandidates().length) return;
     preloadTimer = window.setTimeout(function() {{
       preloadTimer = 0;
-      if (appNavBusy || document.hidden) return;
+      if (appNavBusy || document.hidden || appContent.querySelector('.wb-short-active')) return;
       var url = pagePreloadCandidates()[0];
       if (!url) return;
       var key = appViewKey(url.href), controller = new AbortController();
@@ -29281,6 +29285,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     preloadAttempted.clear();
   }}
   document.addEventListener('stockbot:pagecontentready', schedulePagePreload);
+  document.addEventListener('stockbot:shorttermactive', stopPagePreload);
   document.addEventListener('stockbot:homedetailready', schedulePagePreload);
   document.addEventListener('stockbot:positionschanged', function() {{
     resetPagePreloads();
@@ -55585,7 +55590,7 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
 
 from short_term import ShortTermService, create_blueprint as create_short_term_blueprint
 _short_term_service = ShortTermService(
-    connect=_taiex_reduction_connect, store=_taiex_reduction_store(),
+    connect=_taiex_reduction_connect, store=_taiex_reduction_store(short_term=True),
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
