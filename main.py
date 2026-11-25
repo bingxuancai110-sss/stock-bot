@@ -29393,6 +29393,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     switchAppPage(appLink.href, true);
   }}, true);
   window.addEventListener('popstate', function() {{
+    if (appViewKey(window.location.href) === appCurrentViewKey) {{
+      if (appNavBusy) cancelAppPageRequest();
+      return;
+    }}
     if (appRouteKeys[window.location.pathname]) {{
       switchAppPage(window.location.href, false);
     }}
