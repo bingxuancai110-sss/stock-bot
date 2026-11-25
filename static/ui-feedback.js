@@ -153,7 +153,7 @@
     each(document, '.ui-nav-pending', function (n) { n.classList.remove('ui-nav-pending'); n.removeAttribute('aria-busy'); });
     if (old.box && old.box.isConnected) old.box.remove();
     document.dispatchEvent(new CustomEvent('stockbot:routecomplete'));
-    if (!ok && old.content && old.content.isConnected) {
+    if (ok === false && old.content && old.content.isConnected) {
       var error = el('div', 'ui-feedback-route'); error.dataset.state = 'error'; error.setAttribute('role', 'alert');
       error.appendChild(el('p', '', message || '頁面未能載入，保留原本內容。請再次點選分頁重試。'));
       if (typeof retry === 'function') {
@@ -166,8 +166,9 @@
     }
   }
   function routeStart(label, path, cancel, retry) {
-    routeEnd(true); each(document, '.ui-feedback-route[data-state=error]', function (n) { n.remove(); });
+    routeEnd(null); each(document, '.ui-feedback-route[data-state=error]', function (n) { n.remove(); });
     var content = root(); if (!content) return;
+    content.classList.remove('ui-route-arrive');
     // Keep the current page in place while the next fragment loads. The shared
     // top progress line and pending tab provide feedback without covering the
     // whole screen with a second skeleton card.

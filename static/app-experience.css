@@ -207,10 +207,34 @@ html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bott
   background:var(--sb-feedback-selected,#e5eef5)!important;
 }
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.ui-nav-pending::after{display:none!important}
+html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.experience-nav-target:not(.on)::before{
+  content:'';
+  position:absolute;
+  top:4px;
+  inset-inline-start:calc(50% - 7px);
+  width:14px;
+  height:2px;
+  border-radius:2px;
+  background:currentColor;
+  opacity:.55;
+  pointer-events:none;
+}
 html body#stockbot-app #app-page-content.ui-route-pending{opacity:1!important}
-@keyframes app-shell-arrive{from{opacity:.88}to{opacity:1}}
+@keyframes app-shell-arrive{from{opacity:.82}to{opacity:1}}
+@keyframes app-tab-arrive{
+  from{opacity:.82;transform:translate3d(var(--app-entry-x,0px),var(--app-entry-y,5px),0)}
+  to{opacity:1;transform:translate3d(0,0,0)}
+}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content.ui-route-arrive{
-  animation:app-shell-arrive 180ms var(--app-ease) both!important;
+  animation:app-shell-arrive 180ms var(--app-ease)!important;
+}
+@media(max-width:760px){
+  #stockbot-app #app-page-content[data-app-tab-direction="forward"]{--app-entry-x:10px;--app-entry-y:0px}
+  #stockbot-app #app-page-content[data-app-tab-direction="backward"]{--app-entry-x:-10px;--app-entry-y:0px}
+  html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content.ui-route-arrive{
+    animation-name:app-tab-arrive!important;
+    animation-duration:210ms!important;
+  }
 }
 @media(prefers-reduced-motion:reduce){
   html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content.ui-route-arrive{animation:none!important}
