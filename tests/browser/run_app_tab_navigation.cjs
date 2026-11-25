@@ -48,14 +48,27 @@ async function run() {
     assert.deepEqual(fragments, []);
     assert.equal(await positions.getAttribute('aria-current'), 'page');
 
+    await page.clock.install();
     holdPaths.add('/web/more');
     await more.tap();
     await page.waitForFunction(() => document.querySelector('.experience-nav-target')?.pathname === '/web/more');
     assert.equal(await positions.getAttribute('aria-current'), 'page');
     assert.ok(await content.locator('.position-card').count());
     assert.equal(await content.evaluate(el => el.classList.contains('ui-route-arrive')), false);
+    await page.clock.runFor(1000);
+    const timer = page.locator('#page-nav-progress-card');
+    assert.ok(await timer.isVisible());
+    assert.ok(await page.locator('#page-nav-loader').isVisible());
+    assert.match(await timer.innerText(), /已等待 [1-9]\.\d 秒/);
+    await page.clock.runFor(6500);
+    const waiting = page.locator('.ui-feedback-route[data-state=waiting]');
+    assert.ok(await waiting.isVisible());
+    assert.match(await waiting.locator('[data-route-elapsed]').innerText(), /已等待 [7-9]\.\d 秒/);
+    assert.equal(await timer.isVisible(), false);
     await positions.tap();
     await page.waitForFunction(() => !document.body.classList.contains('app-route-pending'));
+    await page.clock.runFor(200);
+    assert.equal(await timer.isVisible(), false);
     assert.ok(page.url().endsWith('/web/positions'));
     assert.equal(await page.locator('.ui-feedback-route[data-state=error]').count(), 0);
 
@@ -92,5 +105,5 @@ async function run() {
   }
 }
 
-run().then(() => console.log(`${engine}: active tab, pending cancellation, direction, back and reduced motion passed`))
+run().then(() => console.log(`${engine}: tab navigation, elapsed progress, back and reduced motion passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });
