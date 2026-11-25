@@ -164,6 +164,26 @@ def test_intraday_card_quotes_yield_the_worker_between_batches():
     assert len(s.card_quotes) == 53 and not s.card_quote_running
 
 
+def test_intraday_monitor_rejects_old_quotes_and_unsaved_scan_progress():
+    s = service()
+    s.now = lambda: datetime(2026, 11, 17, 10)
+    s.payload = Mock()
+    s.running = True
+    s.progress = 52
+    s.card_quote_session = ('2026-11-17', True)
+    s.card_quotes = {'2330': {'date': '2026-11-17', 'time': '09:35'}}
+    s.cached = {'intraday': True, 'cycle': {'day': '2026-11-17'}, 'scanned': 24,
+                'generated_at': '2026-11-17T09:59:00'}
+    result = s.monitor_intraday()
+    assert result['state'] == 'stalled' and result['stale'] == ['card_quotes', 'saved_scan']
+    assert result['scanned'] == 24 and result['building']
+    s.payload.assert_called_once_with(schedule=True, quote_only=True)
+
+    s.card_quotes['2330']['time'] = '09:59'
+    s.cached['live_scan_observed_at'] = '2026-11-17T09:58:00'
+    assert s.monitor_intraday()['state'] == 'fresh'
+
+
 def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
     s=service(False)
     s.store.load.return_value={'payload':{'rows':[{'code':'2330'}],'generated_at':'2026-11-16T16:00:00','date':'2026-11-16'}}
