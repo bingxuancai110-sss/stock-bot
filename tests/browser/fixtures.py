@@ -89,9 +89,14 @@ groups=ns['_hv2_group_html']('up','推升組合',len(pos),home_ns['contribution_
 data=dict(total_value=70000,total_cost=63000,holdings_count=7,pl_html=ns['fmt_pct'](11.1),market_html=ns['fmt_pct'](-1),portfolio_label='你的組合',portfolio_html=ns['fmt_pct'](1),relative_html=ns['fmt_pct'](2),market_status='合成測試行情',sync_title='測試資料',sync_detail='畫面測試用',contribution_day_label='今日',stale_notice='',impact_positive=dict(name=pos[0][0]['name'],pct=1.2,contribution=.1),impact_negative=dict(name=neg[0][0]['name'],pct=-1.5,contribution=-.2),contribution_groups=groups,holdings_html=home_ns['_home_holdings_preview_html'],journal_html='',judgement_html='<p>合成組合判讀</p>',live_script='')
 home=ns['_render_home_v2'](data);root.joinpath('home-fragment.html').write_text(home,encoding='utf-8');root.joinpath('home.html').write_text(ns['render_page']('今日',home,'portfolio'),encoding='utf-8')
 workbench=ns['render_workbench_body']();root.joinpath('workbench.html').write_text(ns['render_page']('選股',workbench,'screener'),encoding='utf-8')
+root.joinpath('workbench-fragment.html').write_text(workbench, encoding='utf-8')
 ns['is_admin']=lambda uid:False
 more=ns['web_more']('fixture-user')
 root.joinpath('more.html').write_text(more,encoding='utf-8')
+original_respond = ns['respond_page']
+ns['respond_page'] = lambda title, body, nav_active=None: body
+root.joinpath('more-fragment.html').write_text(ns['web_more']('fixture-user'), encoding='utf-8')
+ns['respond_page'] = original_respond
 
 # US rotation uses its actual static page renderer from the feature blueprint;
 # the API response remains intercepted by the browser harness.
@@ -101,6 +106,7 @@ us_page_fn=next(n for n in us_blueprint.body if isinstance(n,ast.FunctionDef) an
 compile_node(us_page_fn)
 us_rotation=ns['render_page']('美股輪動',ns['_page_html'](),'us_rotation')
 root.joinpath('us_rotation.html').write_text(us_rotation,encoding='utf-8')
+root.joinpath('us_rotation-fragment.html').write_text(ns['_page_html'](), encoding='utf-8')
 
 # Exercise the actual K-line route renderer with isolated daily bars and an
 # empty drawing repository; browser writes are intercepted by the test runner.
@@ -136,6 +142,8 @@ root.joinpath('market.html').write_text(market_page,encoding='utf-8')
 market_ns['request'].args={'t':'fixture-token'}
 market_ns['get_realtime_stocks_bulk']=lambda codes,**kwargs:{code:dict(close=100+i,pct=1.2 if i%2 else -1.2) for i,code in enumerate(codes)}
 root.joinpath('market-board.html').write_text(market_ns['web_market']('fixture-user'),encoding='utf-8')
+market_ns['respond_page'] = lambda title, body, nav_active=None: body
+root.joinpath('market-fragment.html').write_text(market_ns['web_market']('fixture-user'), encoding='utf-8')
 # Extract scripts only after every page has been generated. A fresh artifact
 # directory must not depend on HTML left over from an earlier renderer run.
 preview_ns = dict(ns, get_positions=lambda _: positions,

@@ -7,7 +7,7 @@ const playwright = require(process.env.STOCKBOT_PLAYWRIGHT_PACKAGE || 'playwrigh
 const repo = path.resolve(__dirname, '../..');
 const fixtures = process.env.STOCKBOT_UI_ARTIFACTS;
 const engine = process.argv[2] || 'chromium';
-const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank', '/web/portfolio': 'home', '/web/workbench': 'workbench' };
+const pages = { '/web/positions': 'positions', '/web/more': 'more', '/web/leaderboard': 'rank', '/web/portfolio': 'home', '/web/workbench': 'workbench', '/web/market': 'market', '/web/us-rotation': 'us_rotation' };
 
 async function run() {
   const browser = await playwright[engine].launch({ timeout: 15000 });
@@ -17,10 +17,10 @@ async function run() {
     const fragments = [];
     const holdPaths = new Set();
     const heldFragments = new Map();
-    let previewRequests = 0;
+    const background = [];
+    let allowPreloads = false;
     let useStagedHome = false;
     let releaseHomeDetail;
-    let releaseWorkbench;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('https://fixture.test/**', async route => {
       const url = new URL(route.request().url());
@@ -29,15 +29,11 @@ async function run() {
         return fs.existsSync(asset) ? route.fulfill({ path: asset }) : route.fulfill({ status: 404 });
       }
       if (!pages[url.pathname]) return route.fulfill({ json: { ok: true, rows: [], data: [], market_open: false } });
-      if (url.pathname === '/web/workbench' && releaseWorkbench) {
-        releaseWorkbench(route);
-        return;
-      }
-      if (url.pathname === '/web/positions' && url.searchParams.get('preview') === '1') {
-        assert.equal(url.searchParams.get('fast'), '1');
+      if (route.request().headers()['x-stockbot-preload'] === '1') {
+        if (!allowPreloads) return route.fulfill({ status: 429 });
         assert.equal(url.searchParams.get('fragment'), '1');
-        previewRequests += 1;
-        return route.fulfill({ path: path.join(fixtures, 'positions-preview.html') });
+        background.push(url.pathname);
+        return route.fulfill({ path: path.join(fixtures, pages[url.pathname] + '-fragment.html') });
       }
       const fragment = url.searchParams.has('fragment');
       if (url.pathname === '/web/portfolio' && useStagedHome) {
@@ -145,98 +141,57 @@ async function run() {
     await page.clock.runFor(300);
     assert.equal(await page.locator('body').evaluate(el => el.classList.contains('app-chrome-compact')), false);
 
-    await page.goto('https://fixture.test/web/portfolio');
-    assert.equal(previewRequests, 0);
-    const previewCompleted = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
-    await page.clock.runFor(1600);
-    await previewCompleted;
-    assert.equal(previewRequests, 1);
-    await page.clock.runFor(200);
-    assert.equal(await page.locator('[data-positions-preview]').count(), 0);
-    holdPaths.add('/web/positions');
-    const historyLength = await page.evaluate(() => history.length);
-    const requestedPositions = page.waitForEvent('request', request => {
-      const url = new URL(request.url());
-      return url.pathname === '/web/positions' && !url.searchParams.has('preview');
-    });
-    await positions.tap();
-    await requestedPositions;
-    await page.waitForURL('**/web/positions');
-    const preview = page.locator('[data-positions-preview]');
-    assert.ok(await preview.isVisible());
-    assert.ok(await preview.locator('li').count());
-    assert.equal(await preview.locator('form').count(), 0);
-    assert.doesNotMatch(await preview.innerText(), /成本|股數|損益/);
-    assert.equal(await positions.getAttribute('aria-current'), 'page');
-    assert.equal(await content.getAttribute('aria-busy'), 'true');
-    await heldFragments.get('/web/positions').fulfill({ status: 503, body: 'temporary error' });
-    await page.locator('.ui-feedback-route[data-state=error]').waitFor();
-    assert.match(await preview.innerText(), /尚未載入/);
-    holdPaths.delete('/web/positions');
-    await page.getByRole('button', { name: '重試載入' }).click();
-    await content.locator('.position-card').first().waitFor();
-    assert.equal(await preview.count(), 0);
-    assert.equal(await page.evaluate(() => history.length), historyLength + 1);
-
-    holdPaths.add('/web/leaderboard');
-    const rankingRequested = page.waitForEvent('request', request => new URL(request.url()).pathname === '/web/leaderboard');
-    await rank.tap();
-    await rankingRequested;
-    const rankingPreview = page.locator('[data-app-preview]');
-    await rankingPreview.waitFor();
-    assert.match(await rankingPreview.innerText(), /組合績效排行/);
-    assert.equal(await page.locator('.rank-return').count(), 0);
-    await heldFragments.get('/web/leaderboard').fulfill({ path: path.join(fixtures, 'rank-fragment.html') });
-    await page.locator('.rank-return').first().waitFor();
-    assert.equal(await rankingPreview.count(), 0);
-    holdPaths.delete('/web/leaderboard');
-
+    allowPreloads = true;
     useStagedHome = true;
     const heldHomeDetail = new Promise(resolve => { releaseHomeDetail = resolve; });
-    const detailRequested = page.waitForEvent('request', request => {
-      const url = new URL(request.url());
-      return url.pathname === '/web/portfolio' && url.searchParams.get('detail') === '1';
-    });
     await page.goto('https://fixture.test/web/portfolio');
     await page.clock.runFor(100);
-    await detailRequested;
     const homeDetail = await heldHomeDetail;
     await page.clock.runFor(1600);
-    assert.equal(previewRequests, 1);
-    const secondPreviewCompleted = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
+    assert.deepEqual(background, []);
     await homeDetail.fulfill({ path: path.join(fixtures, 'home-fragment.html') });
     await page.locator('#hv2').waitFor();
-    await page.clock.runFor(1600);
-    await secondPreviewCompleted;
-    const refreshedAfterTrade = page.waitForEvent('requestfinished', request => new URL(request.url()).searchParams.get('preview') === '1');
-    await page.evaluate(() => document.dispatchEvent(new CustomEvent('stockbot:positionschanged')));
-    await page.clock.runFor(1600);
-    await refreshedAfterTrade;
-    await page.clock.runFor(31000);
-    assert.equal(previewRequests, 3);
-    await positions.tap();
-    await content.locator('.position-card').first().waitFor();
-    assert.equal(await preview.count(), 0);
-    assert.deepEqual(errors, []);
 
-    const workbenchResponse = new Promise(resolve => { releaseWorkbench = resolve; });
-    const workbenchRequested = page.waitForEvent('request', request => new URL(request.url()).pathname === '/web/workbench');
-    const workbenchPreview = await page.evaluate(() => {
-      document.querySelector('.app-bottom-nav a[href="/web/workbench"]').click();
-      return document.querySelector('[data-document-preview]')?.textContent;
-    });
-    await page.clock.runFor(120);
-    await workbenchRequested;
-    const workbench = await workbenchResponse;
-    assert.ok(workbench.request().isNavigationRequest());
-    assert.match(workbenchPreview, /ETF 與策略研究/);
-    await workbench.fulfill({ path: path.join(fixtures, 'workbench.html') });
-    await page.locator('#stockbot-workbench').waitFor();
-    assert.equal(await page.locator('[data-document-preview]').count(), 0);
+    for (const destination of ['/web/positions', '/web/market', '/web/leaderboard', '/web/us-rotation', '/web/more', '/web/workbench']) {
+      if (!background.includes(destination)) {
+        const ready = page.waitForEvent('requestfinished', request =>
+          request.headers()['x-stockbot-preload'] === '1' && new URL(request.url()).pathname === destination);
+        await page.clock.runFor(1200);
+        await ready;
+      }
+    }
+    assert.deepEqual(background, ['/web/positions', '/web/market', '/web/leaderboard', '/web/us-rotation', '/web/more', '/web/workbench']);
+    await page.clock.runFor(200);
+    const priorFragments = fragments.length;
+    const warmRoutes = [
+      ['/web/positions', '.position-card'],
+      ['/web/market', '.market-chip-grid'],
+      ['/web/leaderboard', '.rank-return'],
+      ['/web/us-rotation', '#us-radar'],
+      ['/web/more', '.more-group'],
+      ['/web/workbench', '#stockbot-workbench']
+    ];
+    for (const [destination, selector] of warmRoutes) {
+      await nav.locator('a[href="' + destination + '"]').tap();
+      await content.locator(selector).first().waitFor({ timeout:3000 });
+      assert.equal(fragments.length, priorFragments);
+      assert.equal(await content.locator('[data-app-preview]').count(), 0);
+    }
+    await page.clock.runFor(31000);
+    holdPaths.add('/web/positions');
+    const freshPositionRequest = page.waitForEvent('request', request =>
+      !request.headers()['x-stockbot-preload'] && new URL(request.url()).pathname === '/web/positions');
+    await positions.tap();
+    await freshPositionRequest;
+    assert.ok(await content.locator('#stockbot-workbench').isVisible());
+    assert.equal(await content.locator('[data-app-preview]').count(), 0);
+    await heldFragments.get('/web/positions').fulfill({ path: path.join(fixtures, 'positions-fragment.html') });
+    await content.locator('.position-card').first().waitFor();
+    assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }
 }
 
-run().then(() => console.log(`${engine}: cached previews, native workbench navigation, holdings refresh and retries passed`))
+run().then(() => console.log(`${engine}: full warm pages, no duplicate foreground fetch, expired fallback passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });
