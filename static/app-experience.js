@@ -5,6 +5,7 @@
   var nav,inner,cursor,pendingPath=null,navFrame=0,scrollFrame=0;
   var arrived=new WeakSet(),homeStatusObserver=null,homeStatusRoot=null;
   var motion=matchMedia('(prefers-reduced-motion: reduce)');
+  var phone=matchMedia('(max-width:760px)'), lastScrollY=null, turnY=0, direction=0;
   function syncNav(){
     navFrame=0;nav=document.querySelector('.app-bottom-nav');inner=nav&&nav.querySelector('.bottom-inner');
     if(!inner)return;
@@ -21,19 +22,37 @@
   function scheduleNav(){if(!navFrame)navFrame=requestAnimationFrame(syncNav);}
   function endRoute(){
     pendingPath=null;document.body.classList.remove('app-route-pending');
-    scheduleNav();
+    resetChrome();scheduleNav();
   }
   function startRoute(e){
     var detail=e.detail||{};pendingPath=detail.path||null;
-    document.body.classList.add('app-route-pending');syncNav();
+    document.body.classList.add('app-route-pending');resetChrome();syncNav();
 
   }
   function syncScroll(){
-    scrollFrame=0;var y=window.scrollY||0,on=y>28,below=document.documentElement.scrollHeight-innerHeight-y>3;
+    scrollFrame=0;
+    var maxY=Math.max(0,document.documentElement.scrollHeight-innerHeight);
+    var y=Math.max(0,Math.min(maxY,window.scrollY||0)),on=y>28,below=maxY-y>3;
     if(document.body.classList.contains('app-is-scrolled')!==on)document.body.classList.toggle('app-is-scrolled',on);
     if(document.body.classList.contains('app-can-scroll-down')!==below)document.body.classList.toggle('app-can-scroll-down',below);
+    if(!phone.matches||motion.matches||y<48||document.body.classList.contains('app-route-pending')){
+      lastScrollY=y;turnY=y;direction=0;
+      document.body.classList.remove('app-chrome-retracted');
+      return;
+    }
+    if(lastScrollY===null){lastScrollY=y;turnY=y;return;}
+    var delta=y-lastScrollY;
+    if(Math.abs(delta)<1)return;
+    var nextDirection=Math.sign(delta);
+    if(direction!==nextDirection){direction=nextDirection;turnY=lastScrollY;}
+    lastScrollY=y;
+    if(direction>0&&y>78&&y-turnY>=30)document.body.classList.add('app-chrome-retracted');
+    if(direction<0&&turnY-y>=12)document.body.classList.remove('app-chrome-retracted');
   }
   function scroll(){if(!scrollFrame)scrollFrame=requestAnimationFrame(syncScroll);}
+  function resetChrome(){
+    lastScrollY=null;direction=0;document.body.classList.remove('app-chrome-retracted');scroll();
+  }
   function prepareHomeStatus(scope){
     var home=scope.querySelector('#hv2');if(!home||homeStatusRoot===home)return;
     var comparison=home.querySelector('.hv2-cmp'),box=comparison&&comparison.closest('.hv2-sec');if(!box)return;
@@ -74,6 +93,8 @@
   document.addEventListener('stockbot:pagecontentready',arrive);
   document.addEventListener('stockbot:page-ready',arrive);
   window.addEventListener('scroll',scroll,{passive:true});window.addEventListener('resize',function(){scheduleNav();scroll();},{passive:true});
+  if(phone.addEventListener)phone.addEventListener('change',resetChrome);
+  if(motion.addEventListener)motion.addEventListener('change',resetChrome);
   window.addEventListener('pageshow',function(){endRoute();arrive();});
   window.addEventListener('pagehide',function(){releaseHomeStatus();endRoute();cancelAnimationFrame(navFrame);cancelAnimationFrame(scrollFrame);navFrame=scrollFrame=0;});
   window.StockBotExperience={sync:scheduleNav};

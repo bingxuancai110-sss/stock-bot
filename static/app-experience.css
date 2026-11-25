@@ -167,6 +167,65 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
   html body#stockbot-app .app-bottom-nav{background:var(--sb-app-surface,#fff)!important}
 }
 
+@media(max-width:760px){
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header{
+    transition:transform 220ms var(--app-ease),background-color var(--app-motion) ease,box-shadow var(--app-motion) ease!important;
+  }
+  html body#stockbot-app[data-app-view].app-chrome-retracted #stockbot-shell:has(#app-page-content)>.wrap>.app-header:not(:focus-within){
+    transform:translate3d(0,calc(-100% - 36px),0)!important;
+    pointer-events:none!important;
+  }
+  html body#stockbot-app #stockbot-shell>.wrap{
+    padding-bottom:calc(100px + env(safe-area-inset-bottom,0px))!important;
+  }
+  html body#stockbot-app .app-bottom-nav{
+    padding:0 max(12px,env(safe-area-inset-right,0px)) calc(10px + env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px))!important;
+    border:0!important;
+    background:transparent!important;
+    box-shadow:none!important;
+    -webkit-backdrop-filter:none!important;
+    backdrop-filter:none!important;
+    pointer-events:none;
+  }
+  html body#stockbot-app .app-bottom-nav::before{display:none!important}
+  html body#stockbot-app .app-bottom-nav .bottom-inner{
+    box-sizing:border-box;
+    padding:4px;
+    border:1px solid var(--sb-app-line,#dce5e3);
+    border-radius:22px;
+    background:var(--sb-app-surface,#fff);
+    box-shadow:0 8px 24px rgba(24,43,60,.14);
+    pointer-events:auto;
+    transition:transform 220ms var(--app-ease);
+  }
+  html body#stockbot-app .app-bottom-nav .bottom-inner>a{
+    min-height:50px!important;
+    gap:3px!important;
+    touch-action:manipulation;
+  }
+  html body#stockbot-app.app-chrome-retracted .app-bottom-nav .bottom-inner:not(:has(:focus-visible)){
+    transform:translate3d(0,5px,0);
+  }
+  @supports ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+    html body#stockbot-app .app-bottom-nav .bottom-inner{
+      background:var(--app-glass);
+      -webkit-backdrop-filter:blur(16px) saturate(1.2);
+      backdrop-filter:blur(16px) saturate(1.2);
+    }
+  }
+}
+@media(max-width:760px) and (prefers-reduced-transparency:reduce){
+  html body#stockbot-app .app-bottom-nav .bottom-inner{
+    background:var(--sb-app-surface,#fff);
+    -webkit-backdrop-filter:none;
+    backdrop-filter:none;
+  }
+}
+@media(max-width:760px) and (prefers-reduced-motion:reduce){
+  html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header,
+  html body#stockbot-app .app-bottom-nav .bottom-inner{transition:none!important;transform:none!important}
+}
+
 /* Scroll-linked editorial fade; no movement or filtering of content. */
 #stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{animation:none!important;opacity:var(--ui-reveal-opacity,1);transition:opacity 180ms ease-out}
 @media(prefers-reduced-motion:reduce){#stockbot-app #stockbot-shell #app-page-content .ui-section-arrive{opacity:1!important;transition:none!important}}
