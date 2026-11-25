@@ -64,7 +64,7 @@
   function releaseHomeStatus(){if(homeStatusObserver)homeStatusObserver.disconnect();homeStatusObserver=null;homeStatusRoot=null;}
   function arrive(){
     scheduleNav();scroll();var scope=document.getElementById('app-page-content');if(!scope)return;
-    prepareHomeStatus(scope);if(motion.matches||document.hidden)return;
+    prepareHomeStatus(scope);if(motion.matches||document.hidden||document.body.classList.contains('app-route-pending'))return;
     var first=scope.querySelector('.totals,.wb-pulse,.us-hero,.rank-situation,#hv2>.hv2-sec.first,.market-quote-hero');
     if(first&&first.animate&&!arrived.has(first)){arrived.add(first);first.animate([{opacity:.75},{opacity:1}],{duration:180,easing:'ease-out'});}
   }

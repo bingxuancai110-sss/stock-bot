@@ -28695,9 +28695,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261119-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261124-2">
-<script defer src="/static/ui-feedback.js?v=20261124-1"></script>
-<script defer src="/static/app-experience.js?v=20261124-2"></script>
+<link rel="stylesheet" href="/static/app-experience.css?v=20261125-1">
+<script defer src="/static/ui-feedback.js?v=20261125-1"></script>
+<script defer src="/static/app-experience.js?v=20261125-1"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
 <script defer src="/static/short-term.js?v=20261124-2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
@@ -29124,11 +29124,30 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   window.stockBotFinishPageLoading = finishTopNavLoading;
 
+  function appTabDirection(path) {{
+    var tabs = Array.from(document.querySelectorAll('.app-bottom-nav .bottom-inner a'));
+    var current = tabs.findIndex(function(tab) {{ return tab.matches('[aria-current="page"]'); }});
+    var next = tabs.findIndex(function(tab) {{ return new URL(tab.href).pathname === path; }});
+    return current >= 0 && next >= 0 && current !== next ? (next > current ? 'forward' : 'backward') : '';
+  }}
+
+  function cancelAppPageRequest() {{
+    appNavSeq += 1;
+    if (appNavController) appNavController.abort();
+    appNavController = null;
+    appNavBusy = false;
+    appContent.removeAttribute('aria-busy');
+    appContent.classList.remove('app-page-loading');
+    if (window.StockBotUI) window.StockBotUI.routeEnd(null);
+    finishTopNavLoading();
+  }}
+
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
     var target = new URL(rawHref, window.location.href);
     if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (!appRouteKeys[target.pathname]) {{
+      if (appNavBusy) cancelAppPageRequest();
       var fullRouteTitle = appTitles[target.pathname] || '頁面';
       if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + fullRouteTitle, true, true);
       if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + fullRouteTitle + '…', target.pathname);
@@ -29139,6 +29158,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
     // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
     if (target.pathname === '/web/workbench') {{
+      if (appNavBusy) cancelAppPageRequest();
       // 工作台仍採正常文件導覽，避免其大型腳本在 fragment 插入後失效；
       // _nav=1 讓伺服器跳過首次進站的全螢幕 Loader，站內只給局部等待提示。
       // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
@@ -29146,7 +29166,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
       target.searchParams.delete('fragment');
       target.searchParams.set('_nav', '1');
-      window.location.assign(target.pathname + (target.search ? '?' + target.searchParams.toString() : ''));
+      if (pushState) window.location.assign(target.pathname + target.search);
+      else window.location.replace(target.pathname + target.search);
       return;
     }}
     // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
@@ -29155,33 +29176,36 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var navSeq = ++appNavSeq;
     appNavBusy = true;
     if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
-    appNavController = window.AbortController ? new AbortController() : null;
+    var controller = window.AbortController ? new AbortController() : null;
+    appNavController = controller;
     if (target.pathname === '/web/portfolio') target.searchParams.set('_nav', String(Date.now()));
     var retryHref = target.pathname + (target.search ? '?' + target.searchParams.toString() : '');
     var requestUrl = target.pathname + '?' + target.searchParams.toString();
     var navStartedAt = performance.now();
+    var tabDirection = appTabDirection(target.pathname);
     var routeTitle = appTitles[target.pathname] || '頁面';
     if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
     var routeLoadTimedOut = false;
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, function() {{ if(appNavController) appNavController.abort(); }}, function() {{ switchAppPage(retryHref, true); }});
-    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, appNavController ? {{signal:appNavController.signal}} : {{}}));
+    var retry = function() {{ switchAppPage(retryHref, pushState); }};
+    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{ controller.abort(); }} : null, retry);
+    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, controller ? {{signal:controller.signal}} : {{}}))
+      .then(function(response) {{
+        if (navSeq !== appNavSeq) return null;
+        if (response.status === 401) {{ target.searchParams.delete('fragment'); window.location.assign(target.pathname + target.search); return null; }}
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      }});
     var routeTimeoutPromise = new Promise(function(resolve, reject) {{
       routeLoadTimeoutId = window.setTimeout(function() {{
         routeLoadTimedOut = true;
-        if (appNavController) {{ try {{ appNavController.abort(); }} catch (ignore) {{}} }}
+        if (controller) controller.abort();
         reject(new Error('頁面載入逾時。'));
       }}, 60000);
     }});
-        Promise.race([routeFetchPromise, routeTimeoutPromise])
-      .then(function(response) {{
-        if (navSeq !== appNavSeq) return null;
-        if (response.status === 401) {{ window.location.assign(target.pathname + target.search.replace(/([?&])fragment=1&?/, '$1').replace(/[?&]$/, '')); return null; }}
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        return response.text();
-      }})
+    Promise.race([routeFetchPromise, routeTimeoutPromise])
       .then(function(fragment) {{
         if (fragment === null) return;
         if (navSeq !== appNavSeq) return;
@@ -29195,6 +29219,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
         setAppNavState(target.pathname);
+        appContent.dataset.appTabDirection = tabDirection;
         executeFragmentScripts(appContent);
         if (target.pathname !== '/web/portfolio') {{
             upgradePreviewFragment(target.pathname, target.search);
@@ -29223,7 +29248,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .catch(function(error) {{
         if (navSeq !== appNavSeq) return;
-        if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '載入逾時，原畫面和資料仍保留。' : '頁面暫時無法開啟，原畫面和資料仍保留。', function() {{ switchAppPage(retryHref, true); }});
+        if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '載入逾時，原畫面和資料仍保留。' : '頁面暫時無法開啟，原畫面和資料仍保留。', retry);
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
           if (window.finishPageNavLoader) window.finishPageNavLoader();
           hideLocalPageLoading();
@@ -29256,7 +29281,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .finally(function() {{
         window.clearTimeout(routeLoadTimeoutId);
-        if (navSeq === appNavSeq) appNavBusy = false;
+        if (navSeq === appNavSeq) {{ appNavBusy = false; appNavController = null; }}
       }});
   }}
   window.stockBotSwitchPage = switchAppPage;
@@ -29295,6 +29320,12 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var appLink = e.target.closest ? e.target.closest('a[data-app-nav="1"]') : null;
     if (!appLink || appLink.target === '_blank' || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
+    if (appContent && appLink.closest('.app-bottom-nav') && appLink.matches('[aria-current="page"]') &&
+        appLink.pathname === location.pathname && appLink.pathname === appCurrentViewKey.split('?')[0]) {{
+      if (appNavBusy) cancelAppPageRequest();
+      window.scrollTo({{top:0, behavior:prefersReducedMotion() ? 'instant' : 'smooth'}});
+      return;
+    }}
     switchAppPage(appLink.href, true);
   }}, true);
   window.addEventListener('popstate', function() {{
