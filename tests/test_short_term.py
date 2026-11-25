@@ -57,6 +57,29 @@ def test_saved_legacy_and_compact_charts_keep_the_same_card_history():
     assert st.json.loads(st.json.dumps(s.payload())) == st.json.loads(st.json.dumps(first))
 
 
+def test_compressed_checkpoint_preserves_rows_and_keeps_legacy_readable():
+    from taiex_job_store import ShortTermSnapshotStore, SnapshotStore
+
+    store = ShortTermSnapshotStore(Mock(), Mock())
+    cycle = {'day': '2026-11-25', 'queue': ['2330'], 'stocks': {'2330': {'name': '台積電'}}, 'cursor': 1}
+    row = {'code': '2330', 'note': '保留完整的訊號內容' * 100}
+    payload = dict(all_rows=[row] * 30, short_rows=[], cycle=cycle, scope={}, selection_version=15)
+    with pytest.MonkeyPatch.context() as patcher:
+        save = Mock(return_value=True)
+        patcher.setattr(SnapshotStore, 'save', save)
+        assert store.save(st.KEY, payload)
+        target, envelope, *_ = save.call_args.args
+        assert target == st.KEY + store.suffix
+        assert envelope['cycle']['queue'] == ['2330']
+        assert len(envelope['packed']) < len(st.json.dumps(payload)) / 3
+
+        read = Mock(side_effect=[{'payload': envelope}, None, {'payload': payload}])
+        patcher.setattr(SnapshotStore, 'load', read)
+        assert store.load(st.KEY)['payload'] == payload
+        assert store.load(st.KEY)['payload'] == payload
+        assert read.call_args.args[0] == st.KEY
+
+
 @pytest.mark.parametrize('kind',['thin','hot','missing','selling','null'])
 def test_technical_entry_is_not_blocked_by_lot_size_or_auxiliary_chips(kind):
     bars,h=market(71)
@@ -157,7 +180,7 @@ def test_closing_scan_reuses_queue_and_publishes_real_current_bars_in_small_batc
     s.memory_reserve_mb = 192
     bars, history = market(75)
     s.now = lambda: now(bars).replace(hour=22)
-    s.safe.side_effect = lambda *, reserve_mb: reserve_mb <= 112
+    s.safe.side_effect = lambda *, reserve_mb: reserve_mb <= st.CLOSE_BATCH_RESERVE_MB
     s.inputs = Mock(side_effect=AssertionError('must not rescan the market universe'))
     codes = [str(2000 + n) for n in range(10)]
     s.store.load_short_cycle.return_value = dict(queue=codes, stocks={code: {'name': code} for code in codes}, scope={})

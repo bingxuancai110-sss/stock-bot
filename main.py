@@ -20732,10 +20732,10 @@ def _taiex_reduction_connect(connect_timeout=10):
 
 
 def _taiex_reduction_store(*, short_term=False):
-    from taiex_job_store import SnapshotStore
+    from taiex_job_store import ShortTermSnapshotStore, SnapshotStore
     if short_term:
-        return SnapshotStore(lambda: _taiex_reduction_connect(connect_timeout=4),
-                             lambda conn: conn.close(), load_timeout_ms=4000)
+        return ShortTermSnapshotStore(lambda: _taiex_reduction_connect(connect_timeout=4),
+                                      lambda conn: conn.close(), load_timeout_ms=4000)
     return SnapshotStore(_taiex_reduction_connect, lambda conn: conn.close())
 
 
