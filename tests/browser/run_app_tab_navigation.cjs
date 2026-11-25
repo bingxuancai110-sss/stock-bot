@@ -44,18 +44,21 @@ async function run() {
     const header = page.locator('.app-header').first();
 
     const dockAtRest = await dock.boundingBox();
+    const headerAtRest = await header.boundingBox();
     assert.ok(dockAtRest.x >= 10 && dockAtRest.width < 375);
     await page.evaluate(() => scrollTo(0, 400));
     await page.waitForFunction(() => scrollY > 200);
-    await page.waitForFunction(() => document.querySelector('.app-header').getBoundingClientRect().bottom <= 0);
-    await page.waitForFunction(rest => document.querySelector('.app-bottom-nav .bottom-inner').getBoundingClientRect().top > rest + 3, dockAtRest.y);
+    await page.waitForFunction(rest => document.querySelector('.app-header').getBoundingClientRect().height < rest * .86, headerAtRest.height);
+    await page.waitForFunction(rest => document.querySelector('.app-bottom-nav .bottom-inner').getBoundingClientRect().width < rest * .94, dockAtRest.width);
     const dockWhileScrolling = await dock.boundingBox();
-    assert.ok(dockWhileScrolling.y - dockAtRest.y <= 6);
+    const headerWhileScrolling = await header.boundingBox();
+    assert.ok(headerWhileScrolling.y >= -1 && headerWhileScrolling.height >= 55);
+    assert.ok(Math.abs((dockWhileScrolling.y + dockWhileScrolling.height) - (dockAtRest.y + dockAtRest.height)) < 1);
     assert.ok(await positions.isVisible());
     await page.screenshot({ path: path.join(fixtures, `${engine}-floating-dock-scrolling.png`) });
     await page.evaluate(() => scrollBy(0, -24));
-    await page.waitForFunction(() => document.querySelector('.app-header').getBoundingClientRect().top >= -1);
-    assert.ok((await header.boundingBox()).height >= 60);
+    await page.waitForFunction(rest => document.querySelector('.app-header').getBoundingClientRect().height >= rest - 1, headerAtRest.height);
+    await page.waitForFunction(rest => document.querySelector('.app-bottom-nav .bottom-inner').getBoundingClientRect().width >= rest - 1, dockAtRest.width);
     await page.screenshot({ path: path.join(fixtures, `${engine}-floating-chrome-return.png`) });
     await positions.tap();
     await page.waitForFunction(() => scrollY < 2);
@@ -115,12 +118,12 @@ async function run() {
     assert.equal(await content.evaluate(el => getComputedStyle(el).animationName), 'none');
     await page.evaluate(() => scrollTo(0, 400));
     await page.clock.runFor(300);
-    assert.equal(await page.locator('body').evaluate(el => el.classList.contains('app-chrome-retracted')), false);
+    assert.equal(await page.locator('body').evaluate(el => el.classList.contains('app-chrome-compact')), false);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }
 }
 
-run().then(() => console.log(`${engine}: floating navigation, reverse scroll, elapsed progress, back and reduced motion passed`))
+run().then(() => console.log(`${engine}: both bars shrink and grow, loading progress, back and reduced motion passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });

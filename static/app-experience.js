@@ -37,7 +37,7 @@
     if(document.body.classList.contains('app-can-scroll-down')!==below)document.body.classList.toggle('app-can-scroll-down',below);
     if(!phone.matches||motion.matches||y<48||document.body.classList.contains('app-route-pending')){
       lastScrollY=y;turnY=y;direction=0;
-      document.body.classList.remove('app-chrome-retracted');
+      document.body.classList.remove('app-chrome-compact');
       return;
     }
     if(lastScrollY===null){lastScrollY=y;turnY=y;return;}
@@ -46,12 +46,12 @@
     var nextDirection=Math.sign(delta);
     if(direction!==nextDirection){direction=nextDirection;turnY=lastScrollY;}
     lastScrollY=y;
-    if(direction>0&&y>78&&y-turnY>=30)document.body.classList.add('app-chrome-retracted');
-    if(direction<0&&turnY-y>=12)document.body.classList.remove('app-chrome-retracted');
+    if(direction>0&&y>78&&y-turnY>=22)document.body.classList.add('app-chrome-compact');
+    if(direction<0&&turnY-y>=12)document.body.classList.remove('app-chrome-compact');
   }
   function scroll(){if(!scrollFrame)scrollFrame=requestAnimationFrame(syncScroll);}
   function resetChrome(){
-    lastScrollY=null;direction=0;document.body.classList.remove('app-chrome-retracted');scroll();
+    lastScrollY=null;direction=0;document.body.classList.remove('app-chrome-compact');scroll();
   }
   function prepareHomeStatus(scope){
     var home=scope.querySelector('#hv2');if(!home||homeStatusRoot===home)return;

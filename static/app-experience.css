@@ -169,11 +169,15 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
 
 @media(max-width:760px){
   html body#stockbot-app[data-app-view] #stockbot-shell:has(#app-page-content)>.wrap>.app-header{
-    transition:transform 220ms var(--app-ease),background-color var(--app-motion) ease,box-shadow var(--app-motion) ease!important;
+    transform-origin:center top;
+    transition:transform 220ms var(--app-ease),border-radius 220ms var(--app-ease),background-color var(--app-motion) ease,box-shadow var(--app-motion) ease!important;
   }
-  html body#stockbot-app[data-app-view].app-chrome-retracted #stockbot-shell:has(#app-page-content)>.wrap>.app-header:not(:focus-within){
-    transform:translate3d(0,calc(-100% - 36px),0)!important;
-    pointer-events:none!important;
+  html body#stockbot-app[data-app-view].app-chrome-compact #stockbot-shell:has(#app-page-content)>.wrap>.app-header:not(:has(:focus-visible)){
+    transform:scale(.94,.82)!important;
+    border-radius:0 0 18px 18px!important;
+  }
+  html body#stockbot-app[data-app-view].app-chrome-compact #stockbot-shell:has(#app-page-content)>.wrap>.app-header::after{
+    opacity:0;
   }
   html body#stockbot-app #stockbot-shell>.wrap{
     padding-bottom:calc(100px + env(safe-area-inset-bottom,0px))!important;
@@ -196,6 +200,7 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
     background:var(--sb-app-surface,#fff);
     box-shadow:0 8px 24px rgba(24,43,60,.14);
     pointer-events:auto;
+    transform-origin:center bottom;
     transition:transform 220ms var(--app-ease);
   }
   html body#stockbot-app .app-bottom-nav .bottom-inner>a{
@@ -203,8 +208,8 @@ body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) .experience-route-
     gap:3px!important;
     touch-action:manipulation;
   }
-  html body#stockbot-app.app-chrome-retracted .app-bottom-nav .bottom-inner:not(:has(:focus-visible)){
-    transform:translate3d(0,5px,0);
+  html body#stockbot-app.app-chrome-compact .app-bottom-nav .bottom-inner:not(:has(:focus-visible)){
+    transform:scale(.92);
   }
   @supports ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
     html body#stockbot-app .app-bottom-nav .bottom-inner{
