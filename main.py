@@ -28697,7 +28697,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261125-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261125-5">
+<link rel="stylesheet" href="/static/app-experience.css?v=20261125-6">
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
@@ -28957,6 +28957,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavSeq = 0;
   var appNavController = null;
   var positionsPreview = null, previewTimer = 0, previewRequest = null, previewAttempted = false;
+  var appPreviews = new Map();
   function appViewKey(href) {{
     var url = new URL(href, window.location.href);
     ['fragment','_nav','fast'].forEach(function(key) {{ url.searchParams.delete(key); }});
@@ -29134,6 +29135,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     appNavBusy = false;
     appContent.removeAttribute('aria-busy');
     appContent.classList.remove('app-page-loading');
+    var status = appContent.querySelector('.app-preview-status');
+    if (status) status.textContent = '載入已取消，請再點一次頁籤重試。';
     if (window.StockBotUI) window.StockBotUI.routeEnd(null);
     finishTopNavLoading();
   }}
@@ -29146,15 +29149,50 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     positionsPreview = null;
   }}
 
+  function removeDocumentPreview() {{
+    if (!appContent || !appContent.classList.contains('app-document-preview')) return;
+    var preview = appContent.querySelector(':scope > [data-document-preview]');
+    if (preview) preview.remove();
+    appContent.classList.remove('app-document-preview');
+  }}
+
+  function prepareAppPreviews() {{
+    if (appPreviews.size) return;
+    var sections = {{
+      '/web/portfolio': '市場與我的組合', '/web/market': '個股報價與 K 線',
+      '/web/positions': '我的持股', '/web/workbench': '個股、ETF 與策略研究',
+      '/web/leaderboard': '組合績效排行', '/web/us-rotation': '產業輪動與風險觀察',
+      '/web/more': '分析工具與設定', '/web/trades': '交易紀錄', '/web/compare': '個股比較',
+      '/web/settings': '個人設定', '/web/chips': '法人與籌碼', '/web/etf': 'ETF 專區',
+      '/web/watchlist': '自選股名單'
+    }};
+    Object.keys(sections).forEach(function(path) {{
+      var card = document.createElement('section');
+      card.className = 'app-route-preview';
+      card.dataset.appPreview = '';
+      var heading = document.createElement('h2');
+      heading.textContent = sections[path];
+      var status = document.createElement('p');
+      status.className = 'app-preview-status';
+      status.setAttribute('role', 'status');
+      status.textContent = '正在載入…';
+      card.append(heading, status);
+      appPreviews.set(path, card);
+    }});
+  }}
+
   function schedulePositionsPreload() {{
     var connection = navigator.connection;
-    if (previewAttempted || previewTimer || appNavBusy || document.hidden || !window.AbortController ||
-        location.pathname !== '/web/portfolio' || !appContent || !appContent.querySelector('#hv2') ||
-        appContent.querySelector('.daily-fast-sync,[data-fast-preview]') ||
-        (connection && (connection.saveData || /2g$/.test(connection.effectiveType || '')))) return;
+    if (previewTimer || appNavBusy || document.hidden ||
+        location.pathname !== '/web/portfolio' || !appContent || !appContent.querySelector('#hv2,.welcome-editorial') ||
+        appContent.querySelector('.daily-fast-sync,[data-fast-preview]')) return;
+    if (appPreviews.size && previewAttempted) return;
     previewTimer = window.setTimeout(function() {{
       previewTimer = 0;
       if (appNavBusy || document.hidden || location.pathname !== '/web/portfolio') return;
+      prepareAppPreviews();
+      if (previewAttempted || !window.AbortController ||
+          !appContent.querySelector('#hv2') || (connection && (connection.saveData || /2g$/.test(connection.effectiveType || '')))) return;
       var tab = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="/web/positions"]');
       if (!tab) return;
       var url = new URL(tab.href);
@@ -29182,6 +29220,11 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   }}
   document.addEventListener('stockbot:pagecontentready', schedulePositionsPreload);
   document.addEventListener('stockbot:homedetailready', schedulePositionsPreload);
+  document.addEventListener('stockbot:positionschanged', function() {{
+    clearPositionsPreload();
+    previewAttempted = false;
+    schedulePositionsPreload();
+  }});
   document.addEventListener('DOMContentLoaded', schedulePositionsPreload, {{once:true}});
   document.addEventListener('visibilitychange', function() {{
     if (document.hidden) clearPositionsPreload(); else schedulePositionsPreload();
@@ -29190,9 +29233,12 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
+    removeDocumentPreview();
     var target = new URL(rawHref, window.location.href);
-    var preview = target.pathname === '/web/positions' && !appNavBusy && positionsPreview &&
+    var sameOrigin = target.origin === location.origin;
+    var preview = sameOrigin && target.pathname === '/web/positions' && !appNavBusy && positionsPreview &&
         positionsPreview.key === appViewKey(target.href) && positionsPreview.expiresAt > performance.now() ? positionsPreview.fragment : '';
+    var prepared = sameOrigin && pushState ? appPreviews.get(target.pathname) : null;
     clearPositionsPreload();
     previewAttempted = false;
     if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
@@ -29216,8 +29262,26 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
       target.searchParams.delete('fragment');
       target.searchParams.set('_nav', '1');
-      if (pushState) window.location.assign(target.pathname + target.search);
-      else window.location.replace(target.pathname + target.search);
+      function openWorkbench() {{
+        if (pushState) window.location.assign(target.pathname + target.search);
+        else window.location.replace(target.pathname + target.search);
+      }}
+      if (prepared) {{
+        var documentPreview = prepared.cloneNode(true);
+        documentPreview.dataset.documentPreview = '';
+        appContent.prepend(documentPreview);
+        appContent.classList.add('app-document-preview');
+        var opening = false;
+        function openAfterPaint() {{
+          if (opening || !documentPreview.isConnected) return;
+          opening = true;
+          openWorkbench();
+        }}
+        requestAnimationFrame(function() {{ requestAnimationFrame(openAfterPaint); }});
+        window.setTimeout(openAfterPaint, 100);
+      }} else {{
+        openWorkbench();
+      }}
       return;
     }}
     // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
@@ -29234,11 +29298,12 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var navStartedAt = performance.now();
     var tabDirection = appTabDirection(target.pathname);
     var routeTitle = appTitles[target.pathname] || '頁面';
-    if (preview) {{
+    if (preview || prepared) {{
       var previewUrl = new URL(target.href);
       previewUrl.searchParams.delete('fragment');
       document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
-      appContent.innerHTML = preview;
+      if (preview) appContent.innerHTML = preview;
+      else appContent.replaceChildren(prepared.cloneNode(true));
       if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', previewUrl.pathname + previewUrl.search);
       pushState = false;
       setAppNavState(target.pathname);
@@ -29250,8 +29315,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    var previewStatus = target.pathname === '/web/positions' && appContent.querySelector('.positions-preview-status');
-    if (previewStatus) previewStatus.textContent = '正在載入完整持股與行情…';
+    var previewStatus = appViewKey(target.href) === appCurrentViewKey && appContent.querySelector('.app-preview-status');
+    if (previewStatus && !preview && !prepared) previewStatus.textContent = '正在載入…';
     var retry = function() {{ switchAppPage(retryHref, pushState); }};
     if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{ controller.abort(); }} : null, retry);
     var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, controller ? {{signal:controller.signal}} : {{}}))
@@ -29311,7 +29376,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .catch(function(error) {{
         if (navSeq !== appNavSeq) return;
-        if (previewStatus) previewStatus.textContent = '完整持股與行情尚未載入。';
+        if (previewStatus) previewStatus.textContent = routeTitle + '內容尚未載入。';
         if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '載入逾時，原畫面和資料仍保留。' : '頁面暫時無法開啟，原畫面和資料仍保留。', retry);
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
           if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -29349,6 +29414,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }});
   }}
   window.stockBotSwitchPage = switchAppPage;
+  window.addEventListener('pageshow', removeDocumentPreview);
   document.addEventListener('pointerdown', function(e) {{
     if(window.StockBotUI)return;
     var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
@@ -29386,7 +29452,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     e.preventDefault();
     if (appContent && appLink.closest('.app-bottom-nav') && appLink.matches('[aria-current="page"]') &&
         appLink.pathname === location.pathname && appLink.pathname === appCurrentViewKey.split('?')[0]) {{
-      var showingPreview = appContent.querySelector('[data-positions-preview]');
+      var showingPreview = appContent.querySelector('[data-app-preview]');
       if (showingPreview && !appNavBusy) switchAppPage(appLink.href, false);
       if (!showingPreview && appNavBusy) cancelAppPageRequest();
       window.scrollTo({{top:0, behavior:prefersReducedMotion() ? 'instant' : 'smooth'}});
@@ -32468,9 +32534,9 @@ def render_positions_fast_summary(uid, preview=False):
             for code in codes[:12]
         )
         tail = f'<p class="positions-preview-more">其餘 {len(codes) - 12} 檔會在完整頁顯示</p>' if len(codes) > 12 else ""
-        return f'''<section class="positions-preload-preview" data-positions-preview>
+        return f'''<section class="app-route-preview positions-preload-preview" data-app-preview data-positions-preview>
   <h2>我的持股</h2>
-  <p class="positions-preview-status" role="status">正在載入完整持股與行情…</p>
+  <p class="app-preview-status" role="status">正在載入完整持股與行情…</p>
   {f'<ul>{rows}</ul>' if rows else ''}{tail}
 </section>'''
     positions = merge_positions(saved)
@@ -33498,6 +33564,7 @@ body #app-page-content .rows:has(.position-card) .position-card-grid>div{border-
         if(responseMessage && /失敗|錯誤|不正確|請填|過期|無法|⚠/.test(responseMessage.textContent||'')) throw new Error(responseMessage.textContent);
         if(!responseDoc.getElementById('app-page-content') || (!confirmedSuccess && (!responseMessage || !/已新增|已賣出|✅|成功/.test(responseMessage.textContent||'')))) throw new Error((responseMessage&&responseMessage.textContent)||'未能確認處理結果，請先檢查持股與操作日報。');
         finished=true;
+        document.dispatchEvent(new CustomEvent('stockbot:positionschanged'));
         if(timer) clearInterval(timer);
         setProgress(100);
         if(!form.isConnected){if(wrap.parentNode)wrap.remove();if(window.StockBotUI)window.StockBotUI.notify("持股記帳已完成。","success");return;}
