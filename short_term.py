@@ -16,7 +16,7 @@ VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 24
 CLOSE_POOL = 8
-CLOSE_BATCH_RESERVE_MB = 96
+CLOSE_BATCH_RESERVE_MB = 112
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
@@ -740,13 +740,14 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None
 class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
-                 market_quotes=None):
+                 market_quotes=None, background_slot=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
         self.calendar=calendar or (lambda d:d.weekday()<5)
         self.light=light;self.category=category or (lambda code,industry:'未分類')
         self.market_quotes = market_quotes
+        self.background_slot = background_slot
         self.card_quotes = {}
         self.card_quote_session = None
         self.card_quote_retry = 0.0
@@ -1008,6 +1009,11 @@ class ShortTermService:
         memory_deferred = False
         intraday = self.intraday()
         session = (day(self.now()), intraday)
+        if self.background_slot and not self.background_slot.acquire(blocking=False):
+            with self.lock:
+                self.running = False
+                self.error = '背景預載執行中，下輪排程會續掃'
+            return
         try:
             with self.lock:self.running=True
             snapshot_key=KEY+(':intraday' if intraday else '')
@@ -1173,7 +1179,7 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
-            if (not complete and (not pause or time_exhausted) and
+            if (intraday and not complete and (not pause or time_exhausted) and
                     self.intraday() == intraday and day(self.now()) == cycle['day']):
                 if self.safe(reserve_mb=reserve):
                     queued=True
@@ -1191,6 +1197,8 @@ class ShortTermService:
             with self.lock:self.error=str(exc)[:160]
             print('⚠️ 短線研究暫緩: '+str(exc)[:160],flush=True)
         finally:
+            if self.background_slot:
+                self.background_slot.release()
             if not queued:
                 with self.lock:
                     self.running=False

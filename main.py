@@ -47876,17 +47876,19 @@ def _run_market_monitor():
 
 
 def _market_monitor_tick():
+    interval = 300
     try:
         status = _run_market_monitor()
         now = taiwan_now()
         if (now.hour >= 17 or ((now.hour, now.minute) >= (14, 20) and status.get("target") == "leaderboard"
                                 and status["state"] == "fresh")) and is_twse_trading_day(now.date()):
+            interval = 120
             _short_term_service.trigger = "收盤自動續掃"
             _short_term_service.payload(schedule=True, quote_only=True)
     except Exception as exc:
         print(f"⚠️ 收盤短線續掃暫緩：{type(exc).__name__}", flush=True)
     finally:
-        timer = threading.Timer(300, _market_monitor_tick)
+        timer = threading.Timer(interval, _market_monitor_tick)
         timer.daemon = True
         timer.start()
 
@@ -55588,6 +55590,7 @@ _short_term_service = ShortTermService(
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
     market_quotes=_short_term_display_quotes,
+    background_slot=_web_preload_lock,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
