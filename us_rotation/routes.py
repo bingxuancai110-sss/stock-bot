@@ -400,7 +400,8 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     if(disposed||!root.isConnected)return;
     readController=new AbortController();const timer=setTimeout(()=>readController.abort(),10000);
     try{
-     const response=await fetch(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store',signal:readController.signal});
+     const readSnapshot=window.stockBotFetchPreloaded||fetch;
+     const response=await readSnapshot(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store',signal:readController.signal});
      if(!response.ok){const error=new Error('HTTP '+response.status);error.retryable=response.status===408||response.status===429||response.status>=500;throw error;}
      const data=await response.json();if(!data||data.ok===false||!Object.prototype.hasOwnProperty.call(data,'snapshot')){const error=new Error('Invalid snapshot response');error.retryable=false;throw error;}
      if(!disposed&&root.isConnected)applyData(data);return;

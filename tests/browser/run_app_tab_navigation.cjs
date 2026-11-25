@@ -18,6 +18,8 @@ async function run() {
     const holdPaths = new Set();
     const heldFragments = new Map();
     const background = [];
+    const backgroundData = [];
+    const foregroundData = [];
     let allowPreloads = false;
     let useStagedHome = false;
     let releaseHomeDetail;
@@ -27,6 +29,13 @@ async function run() {
       if (url.pathname.startsWith('/static/')) {
         const asset = path.join(repo, url.pathname.slice(1));
         return fs.existsSync(asset) ? route.fulfill({ path: asset }) : route.fulfill({ status: 404 });
+      }
+      const defaultSource = url.pathname === '/web/api/workbench/source' && url.searchParams.get('source') === '黑馬';
+      if (defaultSource || url.pathname === '/web/api/us-rotation') {
+        const prefetch = route.request().headers()['x-stockbot-preload'] === '1';
+        (prefetch ? backgroundData : foregroundData).push(url.pathname);
+        return route.fulfill({ json: defaultSource ? { ok:true, rows:[], meta:{market_open:false} } :
+          { ok:true, snapshot:{as_of:'2026-11-25', industries:[]} } });
       }
       if (!pages[url.pathname]) return route.fulfill({ json: { ok: true, rows: [], data: [], market_open: false } });
       if (route.request().headers()['x-stockbot-preload'] === '1') {
@@ -161,6 +170,10 @@ async function run() {
       }
     }
     assert.deepEqual(background, ['/web/positions', '/web/market', '/web/leaderboard', '/web/us-rotation', '/web/more', '/web/workbench']);
+    if (!backgroundData.includes('/web/api/workbench/source')) {
+      await page.waitForEvent('requestfinished', request => new URL(request.url()).pathname === '/web/api/workbench/source');
+    }
+    assert.deepEqual(backgroundData, ['/web/api/us-rotation', '/web/api/workbench/source']);
     await page.clock.runFor(200);
     const priorFragments = fragments.length;
     const warmRoutes = [
@@ -176,7 +189,9 @@ async function run() {
       await content.locator(selector).first().waitFor({ timeout:3000 });
       assert.equal(fragments.length, priorFragments);
       assert.equal(await content.locator('[data-app-preview]').count(), 0);
+      if (destination === '/web/us-rotation') await page.getByText('美股交易日 2026-11-25', { exact:true }).waitFor();
     }
+    assert.deepEqual(foregroundData, []);
     await page.clock.runFor(31000);
     holdPaths.add('/web/positions');
     const freshPositionRequest = page.waitForEvent('request', request =>

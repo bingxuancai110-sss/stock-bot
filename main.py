@@ -4448,10 +4448,12 @@ WEB_PRELOAD_PATHS = {"/web/positions", "/web/market", "/web/leaderboard", "/web/
 
 
 def _is_web_preload():
-    return (request.method == "GET" and request.path in WEB_PRELOAD_PATHS
-            and request.args.get("fragment") == "1"
-            and set(request.args) <= {"fragment", "t"}
-            and request.headers.get("X-StockBot-Preload") == "1")
+    if (request.method != "GET" or request.args.get("fragment") != "1"
+            or request.headers.get("X-StockBot-Preload") != "1"):
+        return False
+    if request.path == "/web/api/workbench/source":
+        return request.args.get("source") == "黑馬" and set(request.args) <= {"fragment", "t", "source"}
+    return (request.path in WEB_PRELOAD_PATHS or request.path == "/web/api/us-rotation") and set(request.args) <= {"fragment", "t"}
 
 
 def web_login_required(view):
@@ -28979,6 +28981,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavSeq = 0;
   var appNavController = null;
   var preloadedPages = new Map(), preloadAttempted = new Set();
+  var preloadedData = new Map();
   var preloadTimer = 0, preloadJob = null;
   var preloadTargets = {{
     '/web/positions': 'id="portfolio-v2"', '/web/market': 'id="market-page"',
@@ -29172,6 +29175,35 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if (preloadJob) preloadJob.controller.abort();
   }}
 
+  function preloadDataPath(path) {{
+    if (path === '/web/workbench') return '/web/api/workbench/source?source=' + encodeURIComponent('黑馬');
+    if (path === '/web/us-rotation') return '/web/api/us-rotation';
+    return '';
+  }}
+
+  function preloadDataKey(url) {{
+    var keyUrl = new URL(url, location.href);
+    if (keyUrl.origin !== location.origin) return '';
+    if (!keyUrl.searchParams.get('t')) keyUrl.searchParams.delete('t');
+    return appViewKey(keyUrl.href);
+  }}
+
+  window.stockBotFetchPreloaded = function(url, options) {{
+    var key = preloadDataKey(url);
+    var saved = key && preloadedData.get(key);
+    if (saved) preloadedData.delete(key);
+    if (saved && saved.expiresAt > performance.now()) return Promise.resolve(new Response(saved.body));
+    if (key && preloadJob && preloadJob.dataKey === key) {{
+      return preloadJob.data.then(function(body) {{
+        if (options.signal && options.signal.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (!body) return fetch(url, options);
+        preloadedData.delete(key);
+        return new Response(body);
+      }});
+    }}
+    return fetch(url, options);
+  }};
+
   function pagePreloadCandidates() {{
     return Object.keys(preloadTargets).map(function(path) {{
       var link = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="' + path + '"]');
@@ -29201,15 +29233,35 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       preloadAttempted.add(key);
       url.searchParams.set('fragment', '1');
       var deadline = window.setTimeout(function() {{ controller.abort(); }}, 9000);
-      job.result = fetch(url, {{
+      var preloadOptions = {{
         credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal,
         headers:{{'X-StockBot-Preload':'1'}}
-      }})
+      }};
+      job.result = fetch(url, preloadOptions)
         .then(function(response) {{ return response.ok && !response.redirected ? response.text() : ''; }})
         .then(function(fragment) {{
           if (controller.signal.aborted || !fragment.includes(preloadTargets[url.pathname]) ||
               fragment.includes('AUTH_EXPIRED')) return '';
           preloadedPages.set(key, {{fragment:fragment, expiresAt:performance.now() + 30000}});
+          var dataPath = preloadDataPath(url.pathname);
+          if (dataPath) {{
+            var dataUrl = new URL(dataPath, location.origin);
+            dataUrl.searchParams.set('fragment', '1');
+            if (url.searchParams.get('t')) dataUrl.searchParams.set('t', url.searchParams.get('t'));
+            job.dataKey = preloadDataKey(dataUrl.href);
+            job.data = fetch(dataUrl, preloadOptions)
+              .then(function(response) {{ return response.ok && !response.redirected ? response.text() : ''; }})
+              .then(function(body) {{
+                if (!body || controller.signal.aborted) return '';
+                var data = JSON.parse(body);
+                var ready = dataPath.indexOf('/workbench/') >= 0 ?
+                  data.ok && Array.isArray(data.rows) && !(data.meta && data.meta.building) : data.ok !== false && data.snapshot;
+                if (!ready) return '';
+                preloadedData.set(job.dataKey, {{body:body, expiresAt:performance.now() + 30000}});
+                return body;
+              }}).catch(function() {{ return ''; }});
+            return job.data.then(function() {{ return fragment; }});
+          }}
           return fragment;
         }})
         .catch(function() {{ return ''; }})
@@ -29225,6 +29277,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   function resetPagePreloads() {{
     stopPagePreload();
     preloadedPages.clear();
+    preloadedData.clear();
     preloadAttempted.clear();
   }}
   document.addEventListener('stockbot:pagecontentready', schedulePagePreload);
@@ -50930,7 +50983,8 @@ function bindFactors(){
     var sourceStartedAt=performance.now();
     if(status)status.setAttribute('data-loading-source',source);
     var sourceUrl='/web/api/workbench/source?source='+encodeURIComponent(source)+(forceRefresh?'&refresh=1':'');
-    var promise = fetch(api(sourceUrl),fetchOptions)
+    var readSource = !forceRefresh && window.stockBotFetchPreloaded ? window.stockBotFetchPreloaded : fetch;
+    var promise = readSource(api(sourceUrl),fetchOptions)
       .finally(function(){if(timeoutId)window.clearTimeout(timeoutId);})
       .then(function(r){
         if(r.status===401)throw new Error('AUTH');
