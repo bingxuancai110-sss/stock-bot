@@ -15,6 +15,8 @@ from technical_space import long_space
 VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 24
+CLOSE_POOL = 8
+CLOSE_BATCH_RESERVE_MB = 96
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
@@ -761,16 +763,18 @@ class ShortTermService:
         n=self.now()
         return self.calendar(n.date()) and (9,0)<=(n.hour,n.minute)<(13,35)
 
-    def scan_reserve(self, intraday):
+    def scan_reserve(self, intraday, closing_batch=False):
         # The web process can be serving requests while a checkpoint is encoded.
         # Leave enough room for those allocations, including between samples.
+        if closing_batch:
+            return min(self.memory_reserve_mb, CLOSE_BATCH_RESERVE_MB)
         return min(self.memory_reserve_mb, 144) if intraday else self.memory_reserve_mb
 
     def in_retry_window(self, session):
         today, intraday = session
         now = self.now()
         return (day(now) == today and self.intraday() == intraday and
-                (intraday or (14 <= now.hour < 21 and self.calendar(now.date()))))
+                (intraday or (now.hour >= 14 and self.calendar(now.date()))))
 
     def defer_for_memory(self, session):
         if self.memory_retry_session != session:
@@ -980,6 +984,25 @@ class ShortTermService:
             if conn:conn.close()
         return history
 
+    def closing_seed(self, previous):
+        try:
+            seed = self.store.load_short_cycle(KEY + ':intraday', day(self.now()), SELECTION_VERSION)
+        except Exception as exc:
+            print('短線盤中清單讀取暫缺：' + type(exc).__name__, flush=True)
+            seed = None
+        if not isinstance(seed, dict) or not seed.get('queue') or not seed.get('stocks'):
+            old = previous.get('cycle') or {}
+            try:
+                age = (self.now().date() - date.fromisoformat(old.get('day') or '')).days
+            except ValueError:
+                return None
+            if previous.get('selection_version') != SELECTION_VERSION or not 0 <= age <= 7:
+                return None
+            seed = dict(queue=old.get('queue'), stocks=old.get('stocks'), scope=previous.get('scope'))
+        if seed.get('queue') and seed.get('stocks') and all(code in seed['stocks'] for code in seed['queue']):
+            return seed
+        return None
+
     def build(self):
         queued=False
         memory_deferred = False
@@ -989,31 +1012,47 @@ class ShortTermService:
             with self.lock:self.running=True
             snapshot_key=KEY+(':intraday' if intraday else '')
             self.deadline=time.monotonic()+120
-            reserve = self.scan_reserve(intraday)
+            reserve = self.scan_reserve(intraday, closing_batch=not intraday)
             if not self.safe(reserve_mb=reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，已保留掃描進度')
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
                     previous.get('selection_version')==SELECTION_VERSION and saved.get('cursor',0)<len(saved.get('queue',[])))
+            closing_batch = not intraday and resume
             if resume:
-                cycle=copy.deepcopy(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
+                cycle=dict(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
                 cursor=cycle['cursor'];queue=cycle['queue']
                 # Closing bars do not change between batches. Rechecking model
                 # positions there wastes requests without improving freshness.
                 active=list(dict.fromkeys(r['code'] for r in previous.get('all_rows',[])+previous.get('short_rows',[]) if intraday and r.get('active') and r['code'] in self.stock_meta))
                 start=cycle.get('active_cursor',0)%max(1,len(active))
                 fast=(active+active)[start:start+min(16,len(active))]
-                base=queue[cursor:cursor+MAX_POOL-len(fast)]
+                batch_size = MAX_POOL if intraday else CLOSE_POOL
+                base=queue[cursor:cursor+batch_size-len(fast)]
                 codes=fast+[c for c in base if c not in fast]
                 cycle['active_cursor']=start+len(fast)
                 names={c:self.stock_meta[c]['name'] for c in codes};history=self.histories(codes)
             else:
                 self.full_queue=[]
-                keep=[r for r in previous.get('all_rows',previous.get('rows',[]))+previous.get('short_rows',[]) if r.get('active')]
-                codes,names,history=self.inputs(keep)
-                base=list(codes)
-                queue=self.full_queue or codes;cursor=0
+                seed = self.closing_seed(previous) if not intraday else None
+                if seed:
+                    closing_batch = True
+                    queue, self.stock_meta = seed['queue'], seed['stocks']
+                    self.scan_meta = copy.deepcopy(seed.get('scope') or {})
+                    self.scan_meta.pop('market_date', None)
+                    codes = queue[:CLOSE_POOL]
+                    names = {code:self.stock_meta[code]['name'] for code in codes}
+                    history = self.histories(codes)
+                    print('短線收盤沿用已保存市場清單 %s 檔，分 %s 檔續查' % (len(queue), CLOSE_POOL), flush=True)
+                else:
+                    reserve = self.scan_reserve(intraday)
+                    if not intraday and not self.safe(reserve_mb=reserve):
+                        raise ScanMemoryDeferred('全市場初篩需等候記憶體餘裕')
+                    keep=[r for r in previous.get('all_rows',previous.get('rows',[]))+previous.get('short_rows',[]) if r.get('active')]
+                    codes,names,history=self.inputs(keep)
+                    queue=self.full_queue or codes
+                base=list(codes);cursor=0
                 cycle=dict(day=day(self.now()),intraday=intraday,queue=queue,cursor=0,stocks=self.stock_meta,
                            evaluated=[],excluded={},failures=0,started_at=self.now().isoformat())
             covered=set(cycle.get('evaluated',[]));failed_codes=set(cycle.get('failed_codes',[]))
@@ -1040,7 +1079,7 @@ class ShortTermService:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
                     suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
                     q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix,
-                                 force_refresh=intraday,cache_result=False)
+                                 force_refresh=intraday or closing_batch,cache_result=False)
                     if not q:
                         failures+=1;failed_codes.add(code)
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
@@ -1054,6 +1093,10 @@ class ShortTermService:
                     live_fresh=bool(observed and -60<=(self.now().timestamp()-observed)<=1200 and
                         datetime.fromtimestamp(observed,timezone(timedelta(hours=8))).date()==self.now().date())
                     bars=normalize_bars(q,self.now(),include_current=intraday and live_fresh)
+                    if closing_batch and (not bars or bars[-1]['date'] != session[0]):
+                        failures+=1;failed_codes.add(code)
+                        excluded['今日收盤日線尚未取得']=excluded.get('今日收盤日線尚未取得',0)+1
+                        continue
                     if bars:
                         quote_dates.append(bars[-1]['date'])
                     raw_price=number(q.get('close')) or next((number(v) for v in reversed(q.get('closes') or []) if number(v)),0)
@@ -1188,7 +1231,7 @@ class ShortTermService:
             retry_pending = self.memory_retry_session == scan_session and self.memory_retry_at
             if (refresh or schedule and (not cached or stale or unfinished)) and not retry_pending and not self.running and time.monotonic()-self.last_try>60:
                 self.last_try=time.monotonic()
-                if self.safe(reserve_mb=self.scan_reserve(intraday)):
+                if self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
                     try:
                         self.executor.submit(self.build)

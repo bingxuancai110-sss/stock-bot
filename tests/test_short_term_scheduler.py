@@ -75,6 +75,19 @@ def test_scheduled_verifier_fails_when_a_running_job_has_stalled(monkeypatch):
         trigger_short_term.main()
 
 
+def test_monitor_resumes_missing_close_after_evening_restart_without_a_page():
+    service = Mock()
+    timer = Mock()
+    ns = dict(_run_market_monitor=lambda: {'state': 'outside_session'},
+              taiwan_now=lambda: datetime(2026, 11, 25, 22, 5),
+              is_twse_trading_day=lambda _: True, _short_term_service=service,
+              threading=Mock(Timer=timer))
+    install(ns, '_market_monitor_tick')
+    ns['_market_monitor_tick']()
+    service.payload.assert_called_once_with(schedule=True, quote_only=True)
+    timer.assert_called_once_with(300, ns['_market_monitor_tick'])
+
+
 @pytest.mark.parametrize('method,hour,trading,expected_call',[
     ('POST',18,True,True),('POST',18,False,None),
     ('POST',13,True,None),('GET',18,True,False),('GET',8,False,False),

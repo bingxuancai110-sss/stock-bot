@@ -133,6 +133,41 @@ def service(safe=True):
     return s
 
 
+def test_closing_scan_reuses_queue_and_publishes_real_current_bars_in_small_batches():
+    s = service()
+    s.memory_reserve_mb = 192
+    bars, history = market(75)
+    s.now = lambda: now(bars).replace(hour=22)
+    s.safe.side_effect = lambda *, reserve_mb: reserve_mb <= 96
+    s.inputs = Mock(side_effect=AssertionError('must not rescan the market universe'))
+    codes = [str(2000 + n) for n in range(10)]
+    s.store.load_short_cycle.return_value = dict(queue=codes, stocks={code: {'name': code} for code in codes}, scope={})
+    s.histories = Mock(side_effect=lambda batch: {code: history for code in batch})
+    s.quote.return_value = quote(bars)
+    s.build()
+    assert s.cached['date'] == bars[-1]['date'] and s.cached['cycle']['cursor'] == 8
+    assert not s.cached['scope']['deep_complete'] and s.in_retry_window((bars[-1]['date'], False))
+    assert all(call.kwargs['force_refresh'] for call in s.quote.call_args_list)
+    s.build()
+    assert s.cached['cycle']['cursor'] == 10 and s.cached['scope']['deep_complete']
+    s.inputs.assert_not_called()
+
+
+def test_closing_scan_cannot_publish_a_new_date_from_an_intraday_queue_alone():
+    s = service()
+    bars, _ = market(75)
+    s.now = lambda: now(bars)
+    s.store.load_short_cycle.return_value = dict(queue=['2330'], stocks={'2330': {'name': 'fixture'}},
+                                                scope={'market_date': bars[-1]['date']})
+    s.histories = Mock(return_value={'2330': []})
+    s.quote.return_value = quote(bars[:-1])
+    old = {'date': bars[-2]['date']}
+    s.cached = old
+    s.build()
+    assert s.cached is old
+    s.store.save.assert_not_called()
+
+
 def test_all_viewers_share_one_background_job_and_get_no_fake_rows():
     s=service()
     assert not s.payload()['meta']['building']

@@ -47877,7 +47877,14 @@ def _run_market_monitor():
 
 def _market_monitor_tick():
     try:
-        _run_market_monitor()
+        status = _run_market_monitor()
+        now = taiwan_now()
+        if (now.hour >= 17 or ((now.hour, now.minute) >= (14, 20) and status.get("target") == "leaderboard"
+                                and status["state"] == "fresh")) and is_twse_trading_day(now.date()):
+            _short_term_service.trigger = "收盤自動續掃"
+            _short_term_service.payload(schedule=True, quote_only=True)
+    except Exception as exc:
+        print(f"⚠️ 收盤短線續掃暫緩：{type(exc).__name__}", flush=True)
     finally:
         timer = threading.Timer(300, _market_monitor_tick)
         timer.daemon = True
