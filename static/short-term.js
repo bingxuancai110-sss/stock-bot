@@ -24,6 +24,19 @@
  function spreadView(r){var p=r.spreads||{},trades=p.completed||[],last=trades[trades.length-1],out='';if(last){out+='<div class="st-profit"><span>'+(r.provisional&&last.exit_date===r.date?'含盤中暫定出場的每股價差':'已出場每股價差')+(trades.length>1?'（'+trades.length+' 次合計）':'')+'</span><strong class="'+spreadClass(p.total_closed_spread)+'">'+spreadText(p.total_closed_spread)+'</strong><small>上次 '+esc(last.entry_date)+' '+price(last.entry_price)+' → '+esc(last.exit_date)+' '+price(last.exit_price)+(trades.length>1?' · '+spreadText(last.spread):'')+'</small></div>';}if(p.open&&p.open.spread!=null){var o=p.open;out+='<div class="st-profit"><span>尚未出場 · 未實現每股價差</span><strong class="'+spreadClass(o.spread)+'">'+spreadText(o.spread)+'</strong><small>'+esc(o.entry_date)+' '+price(o.entry_price)+' → '+esc(o.date)+' '+price(o.price)+'</small></div>';}return out;}
  function api(refresh){var t=new URLSearchParams(location.search).get('t')||'';return '/web/api/workbench/short-term'+(refresh?'?refresh=1':'?read=1')+(t?'&t='+encodeURIComponent(t):'')+'&price_range='+encodeURIComponent(current&&current.priceRange||'all')+'&sort='+encodeURIComponent(current&&current.sort||'signal')+'&direction='+encodeURIComponent(current&&current.direction||'long')+(current&&current.sector?'&sector='+encodeURIComponent(current.sector):'')+(current&&current.position?'&position='+encodeURIComponent(current.position):'')+(current&&current.shape?'&shape='+encodeURIComponent(current.shape):'')+'&offset='+(current&&current.offset||0)+'&limit=20';}
  function alive(s){return current===s&&s.el.isConnected;}
+ function viewKey(s){return [s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|');}
+ function previousSnapshot(s,message){
+  var cached=s.snapshot;
+  if(!cached||cached.view!==viewKey(s)){
+   try{cached=JSON.parse(sessionStorage.getItem('st-last-results-'+s.direction)||'null');}catch(ignore){}
+  }
+  if(!cached||cached.view!==viewKey(s)||!cached.data?.meta?.date)return null;
+  var data=Object.assign({},cached.data);
+  data.meta=Object.assign({},data.meta,{building:false,signals_current:false,previous_snapshot:true,error:message,position_counts:{unknown:data.meta.total}});
+  data.rows=data.rows.map(function(row){return Object.assign({},row,{state:'上次保存',current_action:'unconfirmed',position_group:'unknown',entry_ready:false,action_note:'目前顯示上次保存的研究結果。'});});
+  data.notifications=[];
+  return data;
+ }
  var bannerTimer;
  function dismissActionBanner(){
   clearTimeout(bannerTimer);
@@ -81,7 +94,7 @@
   var alerts=valid?(s.data.alerts||[]):[],entries=alerts.filter(function(e){return e.type==='entry';});
   var counts=meta.stage_counts||{watch:(s.data.rows||[]).filter(function(r){return !r.entry_ready;}).length,triggered:0,entry:entries.length};
   var title=!valid?'最新訊號尚未確認':'觀察 '+(counts.watch||0)+' · 型態觸發 '+(counts.triggered||0)+' · '+(meta.intraday?'盤中進場 ':'今日進場 ')+(counts.entry||entries.length||0);
-  var body=!valid?'<p>'+esc(meta.building?'正在更新；舊紀錄不作為新的進場提示。':'資料截至 '+date+'，尚未確認 '+(meta.expected_date||'最新交易日')+' 的訊號。')+'</p>':'';
+  var body=!valid?'<p>'+esc(meta.building?'正在更新；舊紀錄不作為新的進場提示。':meta.date?'資料截至 '+date+'，尚未確認 '+(meta.expected_date||'最新交易日')+' 的訊號。':'尚未取得可顯示的短線快照。')+'</p>':'';
   if(valid&&alerts.length){var renderAlert=function(e){return '<div class="st-notice-event" data-kind="'+esc(e.type)+'"><b>'+esc(e.name)+' '+esc(e.code)+'｜'+esc((e.provisional?'盤中暫定 · ':'')+(e.type==='entry'?'新'+names[e.type]:names[e.type]))+'</b><span>'+esc(e.date)+' · 訊號價 '+price(e.price)+'</span>'+sizing(e)+'<span>硬停損 '+price(e.stop)+'　停利參考 '+price(e.target)+'</span>'+(e.type==='exit'&&e.spread!=null?'<strong class="'+spreadClass(e.spread)+'">'+spreadText(e.spread)+'</strong>':'')+'</div>';};body+=alerts.slice(0,6).map(renderAlert).join('');if(alerts.length>6)body+='<details><summary>其餘 '+(alerts.length-6)+' 筆新訊號</summary>'+alerts.slice(6).map(renderAlert).join('')+'</details>';body+='<p>'+(meta.intraday?'盤中暫定訊號可能消失，不代表已收盤確認或可按該價格成交。':'下一交易日須重新確認價格與停損距離，不代表可按訊號價直接成交。')+'</p>';}
   var observations=valid?(s.data.observations||[]):[];if(observations.length)body+='<p>今日新增型態觀察 '+observations.length+' 檔 · '+observations.slice(0,3).map(function(r){return esc(r.name);}).join('、')+(observations.length>3?'…':'')+'</p>';
   if(valid&&meta.recent_signals){var recent=meta.recent_signals;body+='<details class="st-recent-signals"><summary>最近30根日K：'+num(recent.entries||0)+' 次進場 · '+num(recent.exits||0)+' 次'+(s.direction==='short'?'回補':'出場')+'</summary><p>範圍：目前篩選的已保存候選，不是全市場績效。策略在場 '+num(recent.active||0)+' 檔；最近進場 '+esc(recent.last_entry_date||'尚無')+'。頂部「今日進場」只計本次資料日。</p></details>';}
@@ -148,7 +161,13 @@
   var focus=document.activeElement,focusCode=focus&&focus.closest('.st-card'),focusExpand=focus&&focus.matches('.st-expand');
   var anchor=s.open&&s.el.querySelector('.st-card[data-code="'+s.open+'"]'),top=anchor&&anchor.getBoundingClientRect().top;
   header(s);var host=s.el.querySelector('.st-cards');s.rowsSignature=signature;s.renderedView=view;s.renderPending=false;
-  if(!rows.length){host.innerHTML=(s.data.meta||{}).building?'<div class="st-skeleton" aria-label="正在篩選候選"></div>':'<div class="st-empty"><b>'+(s.position==='held'?'目前沒有場內股票':s.position==='closed'?'目前沒有已出場股票':'目前沒有符合條件的股票')+'</b><p>可切換其他狀態查看。</p></div>';return;}
+  if(!rows.length){
+   var meta=s.data.meta||{};
+   host.innerHTML=meta.building?'<div class="st-skeleton" aria-label="正在篩選候選"></div>':
+    !meta.date?'<div class="st-empty"><b>暫無可顯示的短線快照</b></div>':
+    '<div class="st-empty"><b>'+(s.position==='held'?'目前沒有場內股票':s.position==='closed'?'目前沒有已出場股票':'目前沒有符合條件的股票')+'</b><p>可切換其他狀態查看。</p></div>';
+   return;
+  }
   var previous=null;
   host.innerHTML=rows.map(function(r){
    var g=group(r),heading='';
@@ -249,11 +268,54 @@
  }
  function load(s,force){
   if(!alive(s))return;if(s.loading){if(force){s.pending=true;s.pendingForce=true;}return;}
-  clearTimeout(s.timer);s.loading=true;var viewAtRequest=[s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|'),id=++s.request,controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},12000);
+  clearTimeout(s.timer);s.loading=true;var viewAtRequest=viewKey(s),id=++s.request,controller=new AbortController(),timeout=setTimeout(function(){controller.abort();},12000);
   var btn=s.el.querySelector('.st-refresh');if(btn){btn.disabled=true;btn.textContent='讀取中…';}
-  fetch(api(force),{credentials:'same-origin',cache:'no-store',signal:controller.signal}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();}).then(function(data){if(!data.ok)throw new Error(data.error||'載入失敗');if(!alive(s)||id!==s.request)return;if(viewAtRequest!==[s.priceRange,s.sort,s.direction,s.sector,s.position,s.shape,s.offset].join('|')){s.pending=true;return;}if(data.meta&&data.meta.offset!=null)s.offset=data.meta.offset;var changed=s.viewChanged||JSON.stringify(s.data)!==JSON.stringify(data);s.data=data;s.fetched=Date.now();if(changed)render(s,s.focusLiveActions);announceActions(s,data);if(s.focusLiveActions){s.focusLiveActions=false;var actions=s.el.querySelector(".st-notices");if(actions){actions.tabIndex=-1;actions.focus({preventScroll:true});actions.scrollIntoView({block:"start"});}}s.viewChanged=false;s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},data.meta&&data.meta.building?5000:30000);}).catch(function(e){if(alive(s)){s.data.meta=Object.assign({},s.data.meta,{building:false,error:e.name==='AbortError'?'讀取逾時，請重試；原結果保留':'暫時無法載入，請重試'});render(s);s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},15000);}}).finally(function(){clearTimeout(timeout);s.loading=false;if(s.pending&&alive(s)){s.pending=false;var force=s.pendingForce;s.pendingForce=false;load(s,force);return;}if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}});
+  fetch(api(force),{credentials:'same-origin',cache:'no-store',signal:controller.signal})
+   .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})
+   .then(function(data){
+    if(!data.ok)throw new Error(data.error||'載入失敗');
+    if(!alive(s)||id!==s.request)return;
+    if(viewAtRequest!==viewKey(s)){s.pending=true;return;}
+    if(data.meta&&data.meta.offset!=null)s.offset=data.meta.offset;
+    if(!data.meta?.date) data=previousSnapshot(s,'顯示上次保存的結果，等待可用快照')||data;
+    var changed=s.viewChanged||JSON.stringify(s.data)!==JSON.stringify(data);
+    s.data=data;s.fetched=Date.now();
+    if(data.meta?.date&&!data.meta.previous_snapshot){
+     s.snapshot={view:viewKey(s),data:data};
+     try{sessionStorage.setItem('st-last-results-'+s.direction,JSON.stringify(s.snapshot));}catch(ignore){}
+    }
+    if(changed)render(s,s.focusLiveActions);
+    announceActions(s,data);
+    if(s.focusLiveActions){
+     s.focusLiveActions=false;var actions=s.el.querySelector('.st-notices');
+     if(actions){actions.tabIndex=-1;actions.focus({preventScroll:true});actions.scrollIntoView({block:'start'});}
+    }
+    s.viewChanged=false;
+    s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},data.meta&&data.meta.building?5000:30000);
+   })
+   .catch(function(e){
+    if(!alive(s))return;
+    if(viewAtRequest!==viewKey(s)){s.pending=true;return;}
+    var reason=e.name==='AbortError'?'讀取逾時':'暫時無法讀取';
+    s.data=previousSnapshot(s,reason+'，顯示上次保存的結果')||
+     {rows:[],meta:{building:false,error:reason+'，稍後會自動重試'}};
+    render(s);
+    s.timer=setTimeout(function(){s.timer=null;if(!s.el.hidden&&!document.hidden)load(s,false);},15000);
+   })
+   .finally(function(){
+    clearTimeout(timeout);s.loading=false;
+    if(s.pending&&alive(s)){s.pending=false;var force=s.pendingForce;s.pendingForce=false;load(s,force);return;}
+    if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}
+   });
  }
- window.StockBotShortTerm={mount:function(el){if(current&&current.el===el){if(!current.loading&&!current.timer&&((current.data.meta||{}).building||Date.now()-(current.fetched||0)>30000))load(current,false);return;}current={el:el,data:{rows:[],meta:{building:true}},open:null,offset:0,direction:'long',priceRange:'all',sort:'signal',sector:'',shape:'',position:'',pending:false,history:false,range:60,end:null,event:null,request:0,loading:false,polls:0,timer:null,id:++sequence,seen:new Set()};try{var saved=JSON.parse(localStorage.getItem('st-price-view')||'{}');if(['all','under100','100to500','500to1000','1000plus'].includes(saved.priceRange))current.priceRange=saved.priceRange;if(['signal','price_desc','price_asc'].includes(saved.sort))current.sort=saved.sort;}catch(ignore){}render(current);load(current,false);},refresh:function(el){this.mount(el);current.polls=0;load(current,true);}};
+ window.StockBotShortTerm={mount:function(el){
+  document.dispatchEvent(new Event('stockbot:shorttermactive'));
+  if(current&&current.el===el){if(!current.loading&&!current.timer&&((current.data.meta||{}).building||Date.now()-(current.fetched||0)>30000))load(current,false);return;}
+  current={el:el,data:{rows:[],meta:{building:true}},open:null,offset:0,direction:'long',priceRange:'all',sort:'signal',sector:'',shape:'',position:'',pending:false,history:false,range:60,end:null,event:null,request:0,loading:false,polls:0,timer:null,id:++sequence,seen:new Set()};
+  try{var saved=JSON.parse(localStorage.getItem('st-price-view')||'{}');if(['all','under100','100to500','500to1000','1000plus'].includes(saved.priceRange))current.priceRange=saved.priceRange;if(['signal','price_desc','price_asc'].includes(saved.sort))current.sort=saved.sort;}catch(ignore){}
+  current.data=previousSnapshot(current,'顯示上次保存的結果，正在確認最新資料')||current.data;
+  render(current);load(current,false);
+ },refresh:function(el){this.mount(el);current.polls=0;load(current,true);}};
  document.addEventListener('stockbot:pageleaving',dismissActionBanner);
  document.addEventListener('visibilitychange',function(){if(document.hidden)dismissActionBanner();else if(current&&!current.el.hidden&&!current.loading)load(current,false);});
  var panel=document.getElementById('wb-short-term');if(panel&&!panel.hidden)window.StockBotShortTerm.mount(panel);

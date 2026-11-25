@@ -38,6 +38,25 @@ def test_real_rules_find_breakout_with_aligned_institutional_evidence():
     assert result['chip']['date']<result['date']
 
 
+def test_saved_legacy_and_compact_charts_keep_the_same_card_history():
+    bars, history = market(75)
+    row = st.analyse('2330', 'fixture', quote(bars), history, now(bars))
+    s = service()
+    s.now = lambda: now(bars)
+    snapshot = dict(date=bars[-1]['date'], all_rows=[row], generated_at=now(bars).isoformat(),
+                    selection_version=st.SELECTION_VERSION)
+    original = copy.deepcopy(row['bars'])
+    s.store.load.return_value = {'payload': snapshot}
+    first = s.payload()
+    assert first['rows'][0]['bars'] == original
+    assert 'bars' not in s.cached['all_rows'][0]
+    assert 'chart_data' not in first['rows'][0]
+    serialized = st.json.loads(st.json.dumps(s.cached))
+    s.loaded = False
+    s.store.load.return_value = {'payload': serialized}
+    assert st.json.loads(st.json.dumps(s.payload())) == st.json.loads(st.json.dumps(first))
+
+
 @pytest.mark.parametrize('kind',['thin','hot','missing','selling','null'])
 def test_technical_entry_is_not_blocked_by_lot_size_or_auxiliary_chips(kind):
     bars,h=market(71)
