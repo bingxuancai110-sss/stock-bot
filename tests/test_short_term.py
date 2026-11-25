@@ -187,11 +187,13 @@ def test_closing_scan_reuses_queue_and_publishes_real_current_bars_in_small_batc
     s.histories = Mock(side_effect=lambda batch: {code: history for code in batch})
     s.quote.return_value = quote(bars)
     s.build()
-    assert s.cached['date'] == bars[-1]['date'] and s.cached['cycle']['cursor'] == 8
+    assert s.cached['date'] == bars[-1]['date'] and s.cached['cycle']['cursor'] == st.CLOSE_POOL
     assert not s.cached['scope']['deep_complete'] and s.in_retry_window((bars[-1]['date'], False))
     assert not s.running
     s.executor.submit.assert_not_called()
     assert all(call.kwargs['force_refresh'] for call in s.quote.call_args_list)
+    s.build()
+    assert s.cached['cycle']['cursor'] == 2 * st.CLOSE_POOL
     s.build()
     assert s.cached['cycle']['cursor'] == 10 and s.cached['scope']['deep_complete']
     s.inputs.assert_not_called()
@@ -207,6 +209,18 @@ def test_short_scan_yields_to_inflight_background_preload():
     assert '背景預載' in s.error
     s.store.save.assert_not_called()
     s.background_slot.release.assert_not_called()
+
+
+def test_interrupted_closing_batch_keeps_visible_snapshot_until_lease_expires():
+    s = service()
+    s.close_batch_lease = Mock()
+    s.close_batch_lease.claim_close_batch.return_value = None
+    previous = s.cached = {'date': '2026-11-25', 'scanned': 136}
+    s.build()
+    assert '上次掃描中斷' in s.error and s.cached is previous
+    assert not s.running
+    s.quote.assert_not_called()
+    s.close_batch_lease.finish_close_batch.assert_not_called()
 
 
 def test_closing_scan_cannot_publish_a_new_date_from_an_intraday_queue_alone():

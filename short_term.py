@@ -18,8 +18,8 @@ from technical_space import long_space
 VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 24
-CLOSE_POOL = 8
-CLOSE_BATCH_RESERVE_MB = 160
+CLOSE_POOL = 4
+CLOSE_BATCH_RESERVE_MB = 192
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
@@ -752,7 +752,7 @@ def technical_pool(metrics, keep, limit=MAX_POOL, sectors=None, price_bands=None
 class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
-                 market_quotes=None, background_slot=None):
+                 market_quotes=None, background_slot=None, close_batch_lease=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
@@ -760,6 +760,7 @@ class ShortTermService:
         self.light=light;self.category=category or (lambda code,industry:'未分類')
         self.market_quotes = market_quotes
         self.background_slot = background_slot
+        self.close_batch_lease = close_batch_lease
         self.card_quotes = {}
         self.card_quote_session = None
         self.card_quote_retry = 0.0
@@ -1021,6 +1022,8 @@ class ShortTermService:
         memory_deferred = False
         intraday = self.intraday()
         session = (day(self.now()), intraday)
+        lease_key = KEY + ':close-attempt'
+        claimed_at = None
         if self.background_slot and not self.background_slot.acquire(blocking=False):
             with self.lock:
                 self.running = False
@@ -1033,6 +1036,13 @@ class ShortTermService:
             reserve = self.scan_reserve(intraday, closing_batch=not intraday)
             if not self.safe(reserve_mb=reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，已保留掃描進度')
+            if not intraday and self.close_batch_lease:
+                claimed_at = self.close_batch_lease.claim_close_batch(lease_key)
+                if not claimed_at:
+                    with self.lock:self.error='上次掃描中斷，暫停續掃並保留快照'
+                    print('短線收盤暫緩：上次掃描中斷，等候重試', flush=True)
+                    return
+                print('短線收盤開始分批詳查', flush=True)
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
@@ -1081,7 +1091,7 @@ class ShortTermService:
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
             official = {}
-            if codes and self.market_quotes:
+            if codes and intraday and self.market_quotes:
                 try:
                     official = self.market_quotes(codes, self.stock_meta, intraday) or {}
                 except Exception as exc:
@@ -1189,6 +1199,8 @@ class ShortTermService:
             # pressure spike here must leave the last persisted cursor usable.
             if not self.safe(reserve_mb=reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，下次從已保存的進度繼續')
+            if claimed_at:
+                print('短線收盤準備保存：%s/%s' % (len(covered), len(queue)), flush=True)
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
@@ -1211,6 +1223,11 @@ class ShortTermService:
             with self.lock:self.error=str(exc)[:160]
             print('⚠️ 短線研究暫緩: '+str(exc)[:160],flush=True)
         finally:
+            if claimed_at:
+                try:
+                    self.close_batch_lease.finish_close_batch(lease_key, claimed_at)
+                except Exception as exc:
+                    print('短線收盤掃描需等候下次重試：' + type(exc).__name__, flush=True)
             if self.background_slot:
                 self.background_slot.release()
             if not queued:

@@ -94,6 +94,32 @@ class ShortTermSnapshotStore(SnapshotStore):
     """Write small DB checkpoints and keep the legacy key readable for rollback."""
     suffix = ':compressed-v1'
 
+    def claim_close_batch(self, key):
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout=4000")
+                cur.execute("""INSERT INTO shared_data_snapshots(snapshot_key,computed_at,payload,source_meta)
+                    VALUES(%s,NOW(),'{}','{}') ON CONFLICT(snapshot_key) DO UPDATE SET computed_at=NOW()
+                    WHERE shared_data_snapshots.computed_at < NOW()-INTERVAL '10 minutes'
+                    RETURNING computed_at""", (key,))
+                row = cur.fetchone()
+            conn.commit()
+            return row[0] if row else None
+        finally:
+            self.release(conn)
+
+    def finish_close_batch(self, key, claimed_at):
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout=4000")
+                cur.execute("DELETE FROM shared_data_snapshots WHERE snapshot_key=%s AND computed_at=%s",
+                            (key, claimed_at))
+            conn.commit()
+        finally:
+            self.release(conn)
+
     @staticmethod
     def pack(payload):
         encoder = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))

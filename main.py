@@ -55589,13 +55589,15 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
 
 
 from short_term import ShortTermService, create_blueprint as create_short_term_blueprint
+_short_term_snapshot_store = _taiex_reduction_store(short_term=True)
 _short_term_service = ShortTermService(
-    connect=_taiex_reduction_connect, store=_taiex_reduction_store(short_term=True),
+    connect=_taiex_reduction_connect, store=_short_term_snapshot_store,
     quote=get_realtime_stock, executor=_BACKGROUND_JOB_EXECUTOR,
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
     market_quotes=_short_term_display_quotes,
     background_slot=_web_preload_lock,
+    close_batch_lease=_short_term_snapshot_store,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
