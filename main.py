@@ -4443,6 +4443,17 @@ def preserve_web_token(markup):
 
 
 
+_web_preload_lock = threading.Lock()
+WEB_PRELOAD_PATHS = {"/web/positions", "/web/market", "/web/leaderboard", "/web/us-rotation", "/web/more", "/web/workbench"}
+
+
+def _is_web_preload():
+    return (request.method == "GET" and request.path in WEB_PRELOAD_PATHS
+            and request.args.get("fragment") == "1"
+            and set(request.args) <= {"fragment", "t"}
+            and request.headers.get("X-StockBot-Preload") == "1")
+
+
 def web_login_required(view):
     """未登入就導向說明頁，不直接報錯——使用者可能只是連結過期。"""
     @wraps(view)
@@ -4531,7 +4542,16 @@ def web_login_required(view):
         if request.method == "GET" and request.path == "/web/screener" and request.args.get("fragment") != "1" and request.args.get("_nav") != "1" and request.args.get("mode", "blackhorse") != "review":
             return render_loading_shell("選股", "screener", ["正在讀取選股快照…", "正在整理候選名單…", "正在完成選股頁面…"], note="資料準備完成後自動進入選股頁面。", staged=False)
 
-        return view(uid, *args, **kwargs)
+        if not _is_web_preload():
+            return view(uid, *args, **kwargs)
+        if not _web_preload_lock.acquire(blocking=False):
+            return "", 429
+        try:
+            if not _background_work_memory_safe(reserve_mb=120):
+                return "", 429
+            return view(uid, *args, **kwargs)
+        finally:
+            _web_preload_lock.release()
     return wrapper
 
 
@@ -21198,6 +21218,8 @@ def _recover_daily_snapshot_after_restart():
     # Only a real top-level page navigation may recover a missed daily snapshot.
     # Render/cron health probes and LINE/API/static requests must stay side-effect
     # free: a /health ping used to start this heavy recovery job after a restart.
+    if _is_web_preload():
+        return None
     path = (request.path or "").strip("/")
     if path == "web/positions" and request.args.get("preview") == "1" and request.args.get("fast") == "1" and request.args.get("fragment") == "1":
         return None
@@ -28697,7 +28719,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261125-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261125-6">
+<link rel="stylesheet" href="/static/app-experience.css?v=20261125-7">
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
@@ -28956,8 +28978,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavBusy = false;
   var appNavSeq = 0;
   var appNavController = null;
-  var positionsPreview = null, previewTimer = 0, previewRequest = null, previewAttempted = false;
-  var appPreviews = new Map();
+  var preloadedPages = new Map(), preloadAttempted = new Set();
+  var preloadTimer = 0, preloadJob = null;
+  var preloadTargets = {{
+    '/web/positions': 'id="portfolio-v2"', '/web/market': 'id="market-page"',
+    '/web/leaderboard': 'id="rankTabs"', '/web/us-rotation': 'id="us-radar"',
+    '/web/more': 'class="more-hero"', '/web/workbench': 'id="stockbot-workbench"'
+  }};
   function appViewKey(href) {{
     var url = new URL(href, window.location.href);
     ['fragment','_nav','fast'].forEach(function(key) {{ url.searchParams.delete(key); }});
@@ -29135,112 +29162,99 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     appNavBusy = false;
     appContent.removeAttribute('aria-busy');
     appContent.classList.remove('app-page-loading');
-    var status = appContent.querySelector('.app-preview-status');
-    if (status) status.textContent = '載入已取消，請再點一次頁籤重試。';
     if (window.StockBotUI) window.StockBotUI.routeEnd(null);
     finishTopNavLoading();
   }}
 
-  function clearPositionsPreload() {{
-    window.clearTimeout(previewTimer);
-    previewTimer = 0;
-    if (previewRequest) previewRequest.abort();
-    previewRequest = null;
-    positionsPreview = null;
+  function stopPagePreload() {{
+    window.clearTimeout(preloadTimer);
+    preloadTimer = 0;
+    if (preloadJob) preloadJob.controller.abort();
   }}
 
-  function removeDocumentPreview() {{
-    if (!appContent || !appContent.classList.contains('app-document-preview')) return;
-    var preview = appContent.querySelector(':scope > [data-document-preview]');
-    if (preview) preview.remove();
-    appContent.classList.remove('app-document-preview');
-  }}
-
-  function prepareAppPreviews() {{
-    if (appPreviews.size) return;
-    var sections = {{
-      '/web/portfolio': '市場與我的組合', '/web/market': '個股報價與 K 線',
-      '/web/positions': '我的持股', '/web/workbench': '個股、ETF 與策略研究',
-      '/web/leaderboard': '組合績效排行', '/web/us-rotation': '產業輪動與風險觀察',
-      '/web/more': '分析工具與設定', '/web/trades': '交易紀錄', '/web/compare': '個股比較',
-      '/web/settings': '個人設定', '/web/chips': '法人與籌碼', '/web/etf': 'ETF 專區',
-      '/web/watchlist': '自選股名單'
-    }};
-    Object.keys(sections).forEach(function(path) {{
-      var card = document.createElement('section');
-      card.className = 'app-route-preview';
-      card.dataset.appPreview = '';
-      var heading = document.createElement('h2');
-      heading.textContent = sections[path];
-      var status = document.createElement('p');
-      status.className = 'app-preview-status';
-      status.setAttribute('role', 'status');
-      status.textContent = '正在載入…';
-      card.append(heading, status);
-      appPreviews.set(path, card);
+  function pagePreloadCandidates() {{
+    return Object.keys(preloadTargets).map(function(path) {{
+      var link = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="' + path + '"]');
+      return link ? new URL(link.href) : null;
+    }}).filter(function(url) {{
+      return url && url.origin === location.origin && !preloadAttempted.has(appViewKey(url.href)) &&
+        appViewKey(url.href) !== appCurrentViewKey;
     }});
   }}
 
-  function schedulePositionsPreload() {{
+  function schedulePagePreload() {{
     var connection = navigator.connection;
-    if (previewTimer || appNavBusy || document.hidden ||
-        location.pathname !== '/web/portfolio' || !appContent || !appContent.querySelector('#hv2,.welcome-editorial') ||
-        appContent.querySelector('.daily-fast-sync,[data-fast-preview]')) return;
-    if (appPreviews.size && previewAttempted) return;
-    previewTimer = window.setTimeout(function() {{
-      previewTimer = 0;
-      if (appNavBusy || document.hidden || location.pathname !== '/web/portfolio') return;
-      prepareAppPreviews();
-      if (previewAttempted || !window.AbortController ||
-          !appContent.querySelector('#hv2') || (connection && (connection.saveData || /2g$/.test(connection.effectiveType || '')))) return;
-      var tab = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="/web/positions"]');
-      if (!tab) return;
-      var url = new URL(tab.href);
-      var key = appViewKey(url.href), expiresAt = performance.now() + 30000;
+    if (preloadTimer || preloadJob || appNavBusy || document.hidden || !window.AbortController ||
+        !appContent || appContent.querySelector('.daily-fast-sync,[data-fast-preview]') ||
+        appContent.querySelector('#loading:not(.is-complete)') ||
+        (location.pathname === '/web/portfolio' && !appContent.querySelector('#hv2,.welcome-editorial')) ||
+        (connection && (connection.saveData || /2g$/.test(connection.effectiveType || '')))) return;
+    if (!pagePreloadCandidates().length) return;
+    preloadTimer = window.setTimeout(function() {{
+      preloadTimer = 0;
+      if (appNavBusy || document.hidden) return;
+      var url = pagePreloadCandidates()[0];
+      if (!url) return;
+      var key = appViewKey(url.href), controller = new AbortController();
+      var job = {{ key:key, controller:controller }};
+      preloadJob = job;
+      preloadAttempted.add(key);
       url.searchParams.set('fragment', '1');
-      url.searchParams.set('fast', '1');
-      url.searchParams.set('preview', '1');
-      var controller = new AbortController();
-      previewAttempted = true;
-      previewRequest = controller;
-      var deadline = window.setTimeout(function() {{ controller.abort(); }}, 5000);
-      fetch(url, {{credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal}})
+      var deadline = window.setTimeout(function() {{ controller.abort(); }}, 9000);
+      job.result = fetch(url, {{
+        credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal,
+        headers:{{'X-StockBot-Preload':'1'}}
+      }})
         .then(function(response) {{ return response.ok && !response.redirected ? response.text() : ''; }})
         .then(function(fragment) {{
-          if (previewRequest === controller && fragment.includes('data-positions-preview') && !fragment.includes('AUTH_EXPIRED')) {{
-            positionsPreview = {{key:key, fragment:fragment, expiresAt:expiresAt}};
-          }}
+          if (controller.signal.aborted || !fragment.includes(preloadTargets[url.pathname]) ||
+              fragment.includes('AUTH_EXPIRED')) return '';
+          preloadedPages.set(key, {{fragment:fragment, expiresAt:performance.now() + 30000}});
+          return fragment;
         }})
-        .catch(function() {{ /* Use normal navigation when the optional preview is unavailable. */ }})
+        .catch(function() {{ return ''; }})
         .finally(function() {{
           window.clearTimeout(deadline);
-          if (previewRequest === controller) previewRequest = null;
+          if (preloadJob === job) preloadJob = null;
+          if (job.interrupted) preloadAttempted.delete(key);
+          schedulePagePreload();
         }});
-    }}, 1400);
+    }}, 1000);
   }}
-  document.addEventListener('stockbot:pagecontentready', schedulePositionsPreload);
-  document.addEventListener('stockbot:homedetailready', schedulePositionsPreload);
+
+  function resetPagePreloads() {{
+    stopPagePreload();
+    preloadedPages.clear();
+    preloadAttempted.clear();
+  }}
+  document.addEventListener('stockbot:pagecontentready', schedulePagePreload);
+  document.addEventListener('stockbot:homedetailready', schedulePagePreload);
   document.addEventListener('stockbot:positionschanged', function() {{
-    clearPositionsPreload();
-    previewAttempted = false;
-    schedulePositionsPreload();
+    resetPagePreloads();
+    schedulePagePreload();
   }});
-  document.addEventListener('DOMContentLoaded', schedulePositionsPreload, {{once:true}});
+  document.addEventListener('DOMContentLoaded', schedulePagePreload, {{once:true}});
   document.addEventListener('visibilitychange', function() {{
-    if (document.hidden) clearPositionsPreload(); else schedulePositionsPreload();
+    if (document.hidden) resetPagePreloads(); else schedulePagePreload();
   }});
-  window.addEventListener('pagehide', clearPositionsPreload);
+  window.addEventListener('pagehide', resetPagePreloads);
 
   function switchAppPage(rawHref, pushState) {{
     if (!appContent) {{ window.location.assign(rawHref); return; }}
-    removeDocumentPreview();
     var target = new URL(rawHref, window.location.href);
+    var key = appViewKey(target.href);
     var sameOrigin = target.origin === location.origin;
-    var preview = sameOrigin && target.pathname === '/web/positions' && !appNavBusy && positionsPreview &&
-        positionsPreview.key === appViewKey(target.href) && positionsPreview.expiresAt > performance.now() ? positionsPreview.fragment : '';
-    var prepared = sameOrigin && pushState ? appPreviews.get(target.pathname) : null;
-    clearPositionsPreload();
-    previewAttempted = false;
+    var savedPage = sameOrigin && preloadedPages.get(key);
+    var warmFragment = savedPage && savedPage.expiresAt > performance.now() ? savedPage.fragment : '';
+    if (savedPage && !warmFragment) preloadedPages.delete(key);
+    var inFlight = sameOrigin && preloadJob && preloadJob.key === key &&
+        !preloadJob.controller.signal.aborted ? preloadJob.result : null;
+    window.clearTimeout(preloadTimer);
+    preloadTimer = 0;
+    if (preloadJob && !warmFragment && !inFlight) {{
+      preloadJob.interrupted = true;
+      preloadJob.controller.abort();
+    }}
     if (window.StockBotUI) window.StockBotUI.captureView(appCurrentViewKey);
     if (!appRouteKeys[target.pathname]) {{
       if (appNavBusy) cancelAppPageRequest();
@@ -29250,38 +29264,17 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       window.location.assign(target.pathname + target.search);
       return;
     }}
-    // 選股工作台含有大量原生頁面腳本；SPA fragment 插入後，部分 WebView/Safari
-    // 情況下動態 script 不會穩定執行，會只留下「讀取最近有效快照…」骨架。
-    // 因此選股工作台改走一次正常文件導覽；仍保留上方小型 Loading，而不是全頁動畫。
-    if (target.pathname === '/web/workbench') {{
-      if (appNavBusy) cancelAppPageRequest();
-      // 工作台仍採正常文件導覽，避免其大型腳本在 fragment 插入後失效；
-      // _nav=1 讓伺服器跳過首次進站的全螢幕 Loader，站內只給局部等待提示。
-      // 這一頁會執行整頁導覽；明確標記一次性的計時交接，其他頁面不沿用 sessionStorage 舊時間。
-      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
-      if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
+    function openWorkbenchDocument() {{
       target.searchParams.delete('fragment');
       target.searchParams.set('_nav', '1');
-      function openWorkbench() {{
-        if (pushState) window.location.assign(target.pathname + target.search);
-        else window.location.replace(target.pathname + target.search);
-      }}
-      if (prepared) {{
-        var documentPreview = prepared.cloneNode(true);
-        documentPreview.dataset.documentPreview = '';
-        appContent.prepend(documentPreview);
-        appContent.classList.add('app-document-preview');
-        var opening = false;
-        function openAfterPaint() {{
-          if (opening || !documentPreview.isConnected) return;
-          opening = true;
-          openWorkbench();
-        }}
-        requestAnimationFrame(function() {{ requestAnimationFrame(openAfterPaint); }});
-        window.setTimeout(openAfterPaint, 100);
-      }} else {{
-        openWorkbench();
-      }}
+      if (pushState) window.location.assign(target.pathname + target.search);
+      else window.location.replace(target.pathname + target.search);
+    }}
+    if (target.pathname === '/web/workbench' && !warmFragment && !inFlight) {{
+      if (appNavBusy) cancelAppPageRequest();
+      if (window.showPageNavLoader) window.showPageNavLoader('正在開啟選股工作台', true, true);
+      if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟選股工作台…', target.pathname);
+      openWorkbenchDocument();
       return;
     }}
     // V244：頁內切換只使用共用頂部進度線，避免全螢幕遮罩、浮動卡片與第二條進度條互相覆蓋。
@@ -29298,34 +29291,32 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var navStartedAt = performance.now();
     var tabDirection = appTabDirection(target.pathname);
     var routeTitle = appTitles[target.pathname] || '頁面';
-    if (preview || prepared) {{
-      var previewUrl = new URL(target.href);
-      previewUrl.searchParams.delete('fragment');
-      document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
-      if (preview) appContent.innerHTML = preview;
-      else appContent.replaceChildren(prepared.cloneNode(true));
-      if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', previewUrl.pathname + previewUrl.search);
-      pushState = false;
-      setAppNavState(target.pathname);
-      appCurrentViewKey = appViewKey(previewUrl.href);
-      window.scrollTo({{top:0, behavior:'instant'}});
-    }}
     if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
     var routeLoadTimedOut = false;
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
-    var previewStatus = appViewKey(target.href) === appCurrentViewKey && appContent.querySelector('.app-preview-status');
-    if (previewStatus && !preview && !prepared) previewStatus.textContent = '正在載入…';
     var retry = function() {{ switchAppPage(retryHref, pushState); }};
-    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{ controller.abort(); }} : null, retry);
-    var routeFetchPromise = fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, controller ? {{signal:controller.signal}} : {{}}))
+    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{
+      controller.abort();
+      if (inFlight) stopPagePreload();
+    }} : null, retry);
+    function requestPage() {{
+      if (navSeq !== appNavSeq || (controller && controller.signal.aborted)) return Promise.resolve(null);
+      if (target.pathname === '/web/workbench') {{
+        openWorkbenchDocument();
+        return Promise.resolve(null);
+      }}
+      return fetch(requestUrl, Object.assign({{credentials:'same-origin', cache:'no-store'}}, controller ? {{signal:controller.signal}} : {{}}))
       .then(function(response) {{
         if (navSeq !== appNavSeq) return null;
         if (response.status === 401) {{ target.searchParams.delete('fragment'); window.location.assign(target.pathname + target.search); return null; }}
         if (!response.ok) throw new Error('HTTP ' + response.status);
         return response.text();
       }});
+    }}
+    var routeFetchPromise = warmFragment ? Promise.resolve(warmFragment) : inFlight ?
+      inFlight.then(function(fragment) {{ return fragment || requestPage(); }}) : requestPage();
     var routeTimeoutPromise = new Promise(function(resolve, reject) {{
       routeLoadTimeoutId = window.setTimeout(function() {{
         routeLoadTimedOut = true;
@@ -29336,8 +29327,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     Promise.race([routeFetchPromise, routeTimeoutPromise])
       .then(function(fragment) {{
         if (fragment === null) return;
-        if (navSeq !== appNavSeq) return;
+        if (navSeq !== appNavSeq || (controller && controller.signal.aborted)) return;
         if (fragment.indexOf('AUTH_EXPIRED') >= 0) {{ window.location.assign(target.pathname + target.search); return; }}
+        if (!warmFragment && !inFlight && sameOrigin && preloadTargets[target.pathname] &&
+            Array.from(target.searchParams.keys()).every(function(param) {{ return param === 'fragment' || param === 't'; }}) &&
+            fragment.includes(preloadTargets[target.pathname])) {{
+          preloadedPages.set(key, {{fragment:fragment, expiresAt:performance.now() + 30000}});
+          preloadAttempted.add(key);
+        }}
         document.dispatchEvent(new CustomEvent('stockbot:pageleaving'));
         appContent.innerHTML = fragment;
         // 伺服器已回傳並插入頁面主內容時，先收起覆蓋卡片；大型頁面腳本隨後初始化，
@@ -29376,7 +29373,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .catch(function(error) {{
         if (navSeq !== appNavSeq) return;
-        if (previewStatus) previewStatus.textContent = routeTitle + '內容尚未載入。';
         if (window.StockBotUI) window.StockBotUI.routeEnd(false, routeLoadTimedOut ? '載入逾時，原畫面和資料仍保留。' : '頁面暫時無法開啟，原畫面和資料仍保留。', retry);
         if (error && error.name === 'AbortError' && !routeLoadTimedOut) {{
           if (window.finishPageNavLoader) window.finishPageNavLoader();
@@ -29410,11 +29406,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       }})
       .finally(function() {{
         window.clearTimeout(routeLoadTimeoutId);
-        if (navSeq === appNavSeq) {{ appNavBusy = false; appNavController = null; }}
+        if (navSeq === appNavSeq) {{ appNavBusy = false; appNavController = null; schedulePagePreload(); }}
       }});
   }}
   window.stockBotSwitchPage = switchAppPage;
-  window.addEventListener('pageshow', removeDocumentPreview);
   document.addEventListener('pointerdown', function(e) {{
     if(window.StockBotUI)return;
     var target = e.target.closest ? e.target.closest('a,button,[role="button"],[data-haptic]') : null;
@@ -29452,9 +29447,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     e.preventDefault();
     if (appContent && appLink.closest('.app-bottom-nav') && appLink.matches('[aria-current="page"]') &&
         appLink.pathname === location.pathname && appLink.pathname === appCurrentViewKey.split('?')[0]) {{
-      var showingPreview = appContent.querySelector('[data-app-preview]');
-      if (showingPreview && !appNavBusy) switchAppPage(appLink.href, false);
-      if (!showingPreview && appNavBusy) cancelAppPageRequest();
+      if (appNavBusy) cancelAppPageRequest();
       window.scrollTo({{top:0, behavior:prefersReducedMotion() ? 'instant' : 'smooth'}});
       return;
     }}
