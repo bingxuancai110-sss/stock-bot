@@ -703,6 +703,9 @@ body#stockbot-app .ui-feedback-route[data-state=waiting]{
   border:1px solid var(--sb-app-line,#dce5e3);border-radius:10px;
   background:var(--sb-app-surface,#fff);box-shadow:0 2px 8px rgba(20,35,45,.06);
 }
+body#stockbot-app .ui-feedback-route[data-state=waiting] .ui-route-elapsed{
+  color:var(--sb-app-muted,#687d89);font-size:11px;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
 body#stockbot-app:has(.ui-feedback-route[data-state=waiting]) #page-nav-progress-card.show:not(.stock-analysis-loader){visibility:hidden!important}
 /* Retain the launch illustration without the perpetual jumping bars. */
 #stockbot-app #stockbot-shell #app-page-content #loading .market-loader-chart i{animation:none!important}

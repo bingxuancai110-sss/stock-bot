@@ -180,6 +180,8 @@
       if (route !== state) return;
       var notice = el('div', 'ui-feedback-route'); notice.dataset.state = 'waiting'; notice.setAttribute('role', 'status'); notice.setAttribute('aria-live', 'polite');
       notice.appendChild(el('p', '', '載入比平常久，原畫面仍可操作。'));
+      var clock=el('small','ui-route-elapsed',document.getElementById('page-nav-progress-time')?.textContent||'');
+      clock.dataset.routeElapsed='';clock.setAttribute('aria-hidden','true');notice.appendChild(clock);
       var button = el('button', '', cancel ? '取消等待' : '收起提示'); button.type = 'button'; button.onclick = function () {
         if (cancel) { cancel(); routeEnd(false, '已取消等待，原畫面仍可使用。', state.retry); }
         else { if (notice.isConnected) notice.remove(); state.box = null; }
