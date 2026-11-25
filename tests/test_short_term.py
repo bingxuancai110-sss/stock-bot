@@ -145,6 +145,25 @@ def test_all_viewers_share_one_background_job_and_get_no_fake_rows():
     s.store.load.assert_called_once()
 
 
+def test_intraday_card_quotes_yield_the_worker_between_batches():
+    s = service()
+    s.now = lambda: datetime(2026, 11, 17, 10)
+    s.market_quotes = Mock(side_effect=lambda codes, *_: {code: {'time': '10:00'} for code in codes})
+    session = ('2026-11-17', True)
+    rows = [{'code': str(code)} for code in range(53)]
+    s.queue_card_quotes({'all_rows': rows}, session)
+
+    task, *args = s.executor.submit.call_args.args
+    task(*args)
+    assert len(s.card_quotes) == 48 and s.card_quote_running
+    assert s.market_quotes.call_count == 1
+    assert s.executor.submit.call_count == 2
+
+    task, *args = s.executor.submit.call_args.args
+    task(*args)
+    assert len(s.card_quotes) == 53 and not s.card_quote_running
+
+
 def test_memory_rejection_preserves_saved_rows_and_does_not_submit_work():
     s=service(False)
     s.store.load.return_value={'payload':{'rows':[{'code':'2330'}],'generated_at':'2026-11-16T16:00:00','date':'2026-11-16'}}

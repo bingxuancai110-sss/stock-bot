@@ -756,8 +756,9 @@ class ShortTermService:
         return self.calendar(n.date()) and (9,0)<=(n.hour,n.minute)<(13,35)
 
     def scan_reserve(self, intraday):
-        # The intraday scan works in small batches and checks between symbols.
-        return min(self.memory_reserve_mb, 96) if intraday else self.memory_reserve_mb
+        # The web process can be serving requests while a checkpoint is encoded.
+        # Leave enough room for those allocations, including between samples.
+        return min(self.memory_reserve_mb, 144) if intraday else self.memory_reserve_mb
 
     def in_retry_window(self, session):
         today, intraday = session
@@ -791,30 +792,33 @@ class ShortTermService:
             if self.in_retry_window(session) and not self.running:
                 self.payload(refresh=True, quote_only=True)
 
-    def refresh_card_quotes(self, session, stocks):
+    def refresh_card_quotes(self, session, stocks, codes, start=0, total=0):
         trading_day, intraday = session
-        total = 0
+        continued = False
         try:
-            codes = list(stocks)
-            batch_size = 48 if intraday else len(codes)
-            for start in range(0, len(codes), batch_size):
-                if (day(self.now()) != trading_day or self.intraday() != intraday or
-                        not self.safe(reserve_mb=112)):
-                    break
-                batch = codes[start:start + batch_size]
-                quotes = self.market_quotes(batch, stocks, intraday) or {}
-                with self.lock:
-                    if self.card_quote_session != session:
-                        break
-                    self.card_quotes.update(quotes)
-                total += len(quotes)
-            print('短線卡片%s：%s/%s，資料日 %s' %
-                  ('盤中補價' if intraday else '正式收盤補價', total, len(stocks), trading_day), flush=True)
+            if (day(self.now()) != trading_day or self.intraday() != intraday or
+                    not self.safe(reserve_mb=112)):
+                return
+            end = min(start + 48, len(codes)) if intraday else len(codes)
+            batch = codes[start:end]
+            quotes = self.market_quotes(batch, stocks, intraday) or {}
+            with self.lock:
+                if self.card_quote_session != session:
+                    return
+                self.card_quotes.update(quotes)
+            total += len(quotes)
+            if end < len(codes):
+                # Yield the shared worker to scan, Radar and daily jobs already queued.
+                self.executor.submit(self.refresh_card_quotes, session, stocks, codes, end, total)
+                continued = True
         except Exception as exc:
             print('短線卡片官方報價暫缺：'+type(exc).__name__, flush=True)
         finally:
-            with self.lock:
-                self.card_quote_running = False
+            if not continued:
+                with self.lock:
+                    self.card_quote_running = False
+                print('短線卡片%s：%s/%s，資料日 %s' %
+                      ('盤中補價' if intraday else '正式收盤補價', total, len(codes), trading_day), flush=True)
 
     def queue_card_quotes(self, cached, session):
         if not self.market_quotes or self.card_quote_running:
@@ -834,8 +838,10 @@ class ShortTermService:
             return
         self.card_quote_retry = time.monotonic() + (300 if intraday else 600)
         self.card_quote_running = True
+        # After a partial refresh, visit the oldest observed symbols first.
+        codes = sorted(stocks, key=lambda code: self.card_quotes.get(code, {}).get('time') or '')
         try:
-            self.executor.submit(self.refresh_card_quotes, session, stocks)
+            self.executor.submit(self.refresh_card_quotes, session, stocks, codes)
         except RuntimeError:
             self.card_quote_running = False
 
@@ -843,7 +849,7 @@ class ShortTermService:
         """Called from the existing Radar producer, independent of any viewer."""
         self.radar_at=observed_at or self.now().isoformat()
         self.trigger='雷達快照排程'
-        return self.payload(refresh=True)
+        return self.payload(refresh=True, quote_only=True)
 
     def inputs(self, keep):
         # The catalogue defines the universe. Institution activity never chooses
@@ -905,7 +911,8 @@ class ShortTermService:
         if not quote_count:raise RuntimeError('全市場技術行情暫時無法取得，沒有使用法人買超名單替代')
         ordered=technical_pool(metrics,[r['code'] for r in keep if r['code'] in self.stock_meta],limit=len(universe),
                              sectors={c:i['sector'] for c,i in self.stock_meta.items()},price_bands=price_by_code)
-        self.full_queue=ordered+[c for c in universe if c not in set(ordered)]
+        ordered_codes = set(ordered)
+        self.full_queue=ordered+[c for c in universe if c not in ordered_codes]
         for c,band in price_by_code.items():self.stock_meta[c]['price_band']=band
         codes=self.full_queue[:MAX_POOL]
         names={c:self.stock_meta[c]['name'] for c in codes};history={c:[] for c in codes}
@@ -978,8 +985,9 @@ class ShortTermService:
                            evaluated=[],excluded={},failures=0,started_at=self.now().isoformat())
             covered=set(cycle.get('evaluated',[]));failed_codes=set(cycle.get('failed_codes',[]))
             excluded=dict(cycle.get('excluded',{}));audits=dict(cycle.get('audits',{}));failures=0;processed=0;finished=set();quote_dates=[]
-            rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in set(queue)}
-            short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in set(queue)}
+            queued_codes = set(queue)
+            rows_by_code={r['code']:r for r in previous.get('all_rows',previous.get('rows',[])) if r['code'] in queued_codes}
+            short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in queued_codes}
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
             official = {}
@@ -1074,6 +1082,10 @@ class ShortTermService:
                 scanned=len(covered),failed=cycle['failures'],cycle=cycle,intraday=intraday,trigger=self.trigger,radar_at=self.radar_at,
                 date=asof,excluded=excluded,scope=copy.deepcopy(self.scan_meta),alerts=latest_alerts(rows+short_rows,asof),
                 generated_at=self.now().isoformat(),note='全市場分批詳查；部分完成會明確顯示進度。規則重播，不送出交易。')
+            # Serializing the full checkpoint briefly duplicates its data. A
+            # pressure spike here must leave the last persisted cursor usable.
+            if not self.safe(reserve_mb=reserve):
+                raise ScanMemoryDeferred('記憶體餘裕不足，下次從已保存的進度繼續')
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
@@ -1153,8 +1165,7 @@ class ShortTermService:
             rows=[]
             saved_rows=(cached or {}).get('short_rows',[]) if direction=='short' else (cached or {}).get('all_rows',(cached or {}).get('rows',[]))
             for row in saved_rows:
-                row=dict(row,signals=signal_allocations(row.get('signals',[])),
-                    spreads=trade_spreads(row.get('signals',[]),row.get('price'),row.get('date'),direction=direction))
+                row = dict(row)
                 market_quote = row.pop('market_quote', None) or {}
                 if self.card_quote_session == quote_session:
                     market_quote = self.card_quotes.get(row['code'], market_quote)
@@ -1164,10 +1175,6 @@ class ShortTermService:
                     row['display_quote'] = market_quote
                 else:
                     row['display_quote'] = {}
-                if direction=='short':
-                    labels={'entry':'首次放空100%','add':'加空首次股數50%','reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
-                    for event in row['signals']:
-                        if event.get('allocation'):event['allocation']['label']=labels[event['type']]
                 try:quote_age=(self.now()-datetime.fromisoformat(row.get('observed_at') or '')).total_seconds()
                 except (ValueError,TypeError):quote_age=999999
                 if signals_current and row.get('date')==day(expected) and (not intraday or -60<=quote_age<=1200):
@@ -1176,16 +1183,39 @@ class ShortTermService:
                     rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
                         action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
                         entry_ready=False,latest_event=None,latest_event_date=None,signal_stage='unconfirmed'))
+            # Only the selected page and alert rows need expanded trade histories.
+            # Filtering and counts can use the same immutable raw signals.
+            details = {}
+
+            def expanded(row):
+                code = row['code']
+                if code in details:
+                    return details[code]
+                signals = row.get('signals', [])
+                allocated = signal_allocations(signals)
+                if direction == 'short':
+                    labels = {'entry':'首次放空100%','add':'加空首次股數50%',
+                              'reduce':'回補當時空單50%','exit':'全部回補剩餘空單'}
+                    for event in allocated:
+                        if event.get('allocation'):
+                            event['allocation']['label'] = labels[event['type']]
+                spreads = trade_spreads(signals, row.get('price'), row.get('date'), direction=direction)
+                details[code] = (allocated, spreads)
+                return details[code]
+
             alerts=[]
+            current_rows = {row['code']: row for row in rows if row.get('current_action') != 'unconfirmed'}
             for alert in (cached or {}).get('alerts',[]) if signals_current else []:
                 if alert.get('direction','long')!=direction:continue
-                row=next((r for r in rows if r['code']==alert['code']),None)
+                row = current_rows.get(alert['code'])
+                if row is None:
+                    continue
+                allocated, spreads = expanded(row)
                 spread=alert.get('spread')
-                if spread is None and row and alert['type']=='exit':
-                    spread=next((t['spread'] for t in reversed(row['spreads']['completed']) if t['exit_date']==alert['date']),None)
-                event=next((e for e in (row or {}).get('signals',[]) if e.get('id')==alert.get('id')),None)
+                if spread is None and alert['type']=='exit':
+                    spread=next((t['spread'] for t in reversed(spreads['completed']) if t['exit_date']==alert['date']),None)
+                event=next((e for e in allocated if e.get('id')==alert.get('id')),None)
                 alerts.append(dict(alert,spread=spread,allocation=(event or {}).get('allocation')))
-            alerts=[a for a in alerts if any(r['code']==a['code'] and r.get('current_action')!='unconfirmed' for r in rows)]
             if sector=='電子':rows=[r for r in rows if r.get('sector')=='電子']
             elif sector=='非電子':rows=[r for r in rows if r.get('sector')!='電子']
             if shape in ('reversal','breakout','pullback','continuation','repair'):
@@ -1207,7 +1237,7 @@ class ShortTermService:
             recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
             for row in rows:
                 if row.get('current_action')=='unconfirmed':continue
-                dates=[b['date'] for b in row.get('bars',[])][-30:]
+                dates=[b['date'] for b in row.get('bars',[])[-30:]]
                 if not dates:continue
                 for event in row.get('signals',[]):
                     if event.get('provisional') or event.get('date','')<dates[0]:continue
@@ -1224,7 +1254,11 @@ class ShortTermService:
             new_watch=[dict(code=r['code'],name=r['name'],date=r['watch_date'],price=r['price'],type='watch')
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             notifications = live_action_notifications(cached, self.now()) if intraday and signals_current else []
-            return dict(ok=True,rows=rows[offset:offset+limit],alerts=alerts,observations=new_watch,
+            page_rows = []
+            for row in rows[offset:offset + limit]:
+                allocated, spreads = expanded(row)
+                page_rows.append(dict(row, signals=allocated, spreads=spreads))
+            return dict(ok=True,rows=page_rows,alerts=alerts,observations=new_watch,
                 notifications=notifications,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 recent_signals=recent,stage_counts=stages,

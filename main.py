@@ -36,7 +36,7 @@ import psycopg2.extensions
 from psycopg2.extras import execute_values
 from urllib.parse import quote, urlencode, urlparse
 from html.parser import HTMLParser
-from flask import Flask, abort, request, jsonify
+from flask import Flask, abort, has_request_context, request, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (MessageEvent, TextMessage, TextSendMessage,
@@ -20858,6 +20858,7 @@ def _do_fetch_t86():
 # 狀態存資料庫而不是記憶體：gunicorn 開多個 worker 時，工作在 A 執行、
 # 查詢卻可能連到 B，記憶體版本會看到空的；服務重啟也會全部消失。
 JOB_STALE_MINUTES = 30   # 超過這麼久還標示執行中，視為當掉的殘留
+JOB_RECOVERY_MINUTES = {"每日快照": 5, "短線盤中更新檢查": 5, "盤中雷達快照": 20}
 
 
 def _job_batch_id(name):
@@ -20875,7 +20876,7 @@ def _job_mark_start(name):
     # Cron 每 10 分鐘呼叫一次；雷達最慢可能接近一輪週期，20 分鐘門檻
     # 可避免前一輪尚未結束時又啟動第二個全市場工作。程序被 OOM 終止後，
     # 最遲 20 分鐘仍可自動恢復。
-    stale_minutes = 20 if name == "盤中雷達快照" else JOB_STALE_MINUTES
+    stale_minutes = JOB_RECOVERY_MINUTES.get(name, JOB_STALE_MINUTES)
     conn = None
     try:
         conn = get_db_connection()
@@ -20905,10 +20906,6 @@ def _job_mark_start(name):
             WHERE job_runs.running = FALSE
                OR job_runs.started_at IS NULL
                OR job_runs.started_at < NOW() - INTERVAL '%s minutes'
-               OR (job_runs.name = '每日快照'
-                   AND job_runs.progress_stage = 'picks'
-                   AND COALESCE(job_runs.progress_total, 0) = 2
-                   AND job_runs.started_at < NOW() - INTERVAL '5 minutes')
             RETURNING name
             """,
             (name, batch_id, stale_minutes),
@@ -21022,7 +21019,8 @@ def log_trigger_source(name):
 
 def run_in_background(name, fn):
     """把耗時工作丟到序列背景佇列並立刻回應，避免工作互搶記憶體。"""
-    log_trigger_source(name)
+    if has_request_context():
+        log_trigger_source(name)
     name = str(name or "背景工作")
     with _BACKGROUND_JOB_SUBMISSION_LOCK:
         if name in _BACKGROUND_JOB_QUEUED:
@@ -21072,6 +21070,36 @@ def run_in_background(name, fn):
 # _job_mark_start 使用資料庫條件更新，避免多個請求重複啟動。
 _daily_snapshot_recovery_lock = threading.Lock()
 _daily_snapshot_recovery_last_check = 0.0
+_daily_snapshot_retry_pending = False
+
+
+def _schedule_daily_snapshot_recovery():
+    """Retry interrupted closing snapshots even if nobody opens the site."""
+    global _daily_snapshot_retry_pending
+    now = taiwan_now()
+    if now.weekday() >= 5 or not ((13, 45) <= (now.hour, now.minute) < (17, 0)):
+        return
+    with _daily_snapshot_recovery_lock:
+        if _daily_snapshot_retry_pending:
+            return
+        _daily_snapshot_retry_pending = True
+
+    def recheck():
+        global _daily_snapshot_retry_pending
+        verified = False
+        try:
+            verified = _recover_interrupted_daily_snapshot()
+        except Exception as exc:
+            print(f"⚠️ 每日核心快照自動恢復暫緩：{type(exc).__name__}", flush=True)
+        finally:
+            with _daily_snapshot_recovery_lock:
+                _daily_snapshot_retry_pending = False
+        if not verified:
+            _schedule_daily_snapshot_recovery()
+
+    timer = threading.Timer(120, recheck)
+    timer.daemon = True
+    timer.start()
 
 
 def _recover_interrupted_daily_snapshot():
@@ -21087,17 +21115,19 @@ def _recover_interrupted_daily_snapshot():
             return
         _daily_snapshot_recovery_last_check = now_mono
 
-    today = taiwan_today()
-    if (not _taiwan_post_close() or today.weekday() >= 5 or
-            not is_twse_trading_day(today)):
-        return
+    now_tw = taiwan_now()
+    today = now_tw.date()
+    if ((now_tw.hour, now_tw.minute) < (13, 45) or not is_twse_trading_day(today)):
+        return True
+    with _BACKGROUND_JOB_SUBMISSION_LOCK:
+        if "每日快照" in _BACKGROUND_JOB_QUEUED:
+            return
 
     conn = get_db_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT running, started_at, progress_stage, progress_index, progress_total,
-                   finished_at, result
+            SELECT running, started_at, finished_at, result
             FROM job_runs WHERE name='每日快照' LIMIT 1
         """)
         row = cur.fetchone()
@@ -21109,16 +21139,13 @@ def _recover_interrupted_daily_snapshot():
         release_db_connection(conn)
 
     if not row:
+        run_in_background("每日快照", lambda: _do_daily_snapshot(core_only_recovery=True))
         return
-    running, started_at, stage, index, total, finished_at, result = row
-    now_tw = taiwan_now()
+    running, started_at, finished_at, result = row
     if running:
         started_tw = as_taiwan_datetime(started_at)
         age_seconds = ((now_tw - started_tw).total_seconds() if started_tw else 0)
-        legacy_stuck = (str(stage or '') == 'picks' and int(total or 0) == 2
-                        and age_seconds >= 300)
-        generic_stuck = age_seconds >= JOB_STALE_MINUTES * 60
-        if not (legacy_stuck or generic_stuck):
+        if started_tw and age_seconds < JOB_RECOVERY_MINUTES["每日快照"] * 60:
             return
     else:
         # 避免剛結束就連續重跑；但失敗／未完成的核心快照每分鐘自動重試。
@@ -21154,12 +21181,12 @@ def _recover_interrupted_daily_snapshot():
             print(f"⚠️ 驗證每日排行榜快照完整性失敗：{type(exc).__name__}")
             rank_ready = False
         if portfolio_ready and rank_ready:
-            return
+            return True
         print("♻️ 每日核心快照尚未完整，準備自動補跑：portfolio_ready=%s missing_users=%s rank_ready=%s rank_rows=%s result=%s" % (
             portfolio_ready, (len(missing_users) if missing_users is not None else "unknown"),
             rank_ready, rank_rows_today, str(result or "")[:100]), flush=True)
 
-    print("♻️ 偵測到中斷／未完成的每日組合與排行榜快照；網頁請求只恢復核心快照")
+    print("♻️ 偵測到中斷／未完成的每日組合與排行榜快照，啟動核心補建")
     # A normal page request must never resume the optional all-market screener
     # scans from a stale daily job. Those scans are large enough to evict this
     # single 512 MiB web instance; their existing scheduled warm-up owns them.
@@ -21231,7 +21258,7 @@ def job_status():
             started_tw = as_taiwan_datetime(started)
             mins = ((now_tw - started_tw).total_seconds() / 60
                     if started_tw else 0)
-            stale = "　⚠️ 疑似當掉" if mins > JOB_STALE_MINUTES else ""
+            stale = "　⚠️ 疑似當掉" if mins > JOB_RECOVERY_MINUTES.get(name, JOB_STALE_MINUTES) else ""
             progress = (f"｜{progress_stage} {progress_index}"
                         + (f"/{progress_total}" if progress_total is not None else ""))
             lines.append(f"[執行中] {name}"
@@ -21264,6 +21291,7 @@ def cron_snapshot_portfolio():
     secret = request.args.get("token")
     if secret != os.environ.get("CRON_SECRET"):
         abort(403)
+    _schedule_daily_snapshot_recovery()
     return run_in_background("每日快照", _do_daily_snapshot), 200
 
 
@@ -21274,15 +21302,6 @@ def _do_daily_snapshot(core_only_recovery=False):
     picks 0/2，根本還沒寫 portfolio_snapshots／leaderboard_rank_snapshots。
     這裡將兩項核心快照提到最前面，並且只接受同日官方收盤行情。
     """
-    # Reconfirm provisional short-term bars in the existing post-close queue.
-    if not core_only_recovery and taiwan_now().hour >= 14:
-        service = globals().get("_short_term_service")
-        if service is not None:
-            try:
-                service.trigger = "每日收盤排程"
-                service.payload(refresh=True)
-            except Exception as exc:
-                print("⚠️ 短線收盤排程未啟動：%s" % type(exc).__name__, flush=True)
     job_name = "每日快照"
     today = taiwan_today()
     today_key = today.strftime("%Y%m%d")
@@ -21575,6 +21594,15 @@ def _do_daily_snapshot(core_only_recovery=False):
         # scheduled warm-up path, where the memory guard is already applied.
         return (f"{today} 的持股與排行榜核心快照已完成；網頁自動恢復略過產業、自選及全市場選股掃描，"
                 "等待既有 warm-up／排程更新選股快照。")
+
+    if taiwan_now().hour >= 14:
+        service = globals().get("_short_term_service")
+        if service is not None:
+            try:
+                service.trigger = "每日收盤排程"
+                service.payload(schedule=True, quote_only=True)
+            except Exception as exc:
+                print("⚠️ 短線收盤排程未啟動：%s" % type(exc).__name__, flush=True)
 
     def optional_stage_ready(stage, reserve_mb=200):
         # Check the container budget before each expensive unit of work. Leave
@@ -55490,6 +55518,9 @@ def _bootstrap_tw_research(attempt=0):
 _tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)
 _tw_research_bootstrap_timer.daemon = True
 _tw_research_bootstrap_timer.start()
+
+if os.environ.get("DATABASE_URL"):
+    _schedule_daily_snapshot_recovery()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """Exercise real snapshot/connection functions without app startup or network."""
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 import threading
@@ -98,6 +98,26 @@ def test_official_failure_falls_back_to_valid_same_day_mis():
     ns,_=daily_context({},mis);ns['_fetch_official_daily_close_quotes'].side_effect=RuntimeError('temporary')
     assert '核心快照已完成' in ns['_do_daily_snapshot'](core_only_recovery=True)
     assert ns['save_portfolio_snapshot'].call_count==2
+
+
+def test_scheduled_recovery_retries_until_core_is_verified():
+    timer = Mock()
+    recover = Mock(side_effect=[None, True])
+    ns = dict(threading=SimpleNamespace(Lock=threading.Lock, Timer=timer),
+              taiwan_now=lambda: datetime(2026, 11, 25, 14, 10),
+              _daily_snapshot_recovery_lock=threading.Lock(),
+              _daily_snapshot_retry_pending=False,
+              _recover_interrupted_daily_snapshot=recover)
+    install(ns, '_schedule_daily_snapshot_recovery')
+    ns['_schedule_daily_snapshot_recovery']()
+    ns['_schedule_daily_snapshot_recovery']()
+    assert timer.call_count == 1
+    timer.call_args.args[1]()
+    assert timer.call_count == 2
+    timer.call_args.args[1]()
+    assert timer.call_count == 2
+    assert recover.call_count == 2
+    assert not ns['_daily_snapshot_retry_pending']
 
 
 def test_radar_quote_overrides_reach_history_calculation_without_refetching_mis():
