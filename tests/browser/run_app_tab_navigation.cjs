@@ -40,9 +40,23 @@ async function run() {
     const more = nav.locator('a[href="/web/more"]');
     const rank = nav.locator('a[href="/web/leaderboard"]');
     const content = page.locator('#app-page-content');
+    const dock = nav.locator('.bottom-inner');
+    const header = page.locator('.app-header').first();
 
+    const dockAtRest = await dock.boundingBox();
+    assert.ok(dockAtRest.x >= 10 && dockAtRest.width < 375);
     await page.evaluate(() => scrollTo(0, 400));
     await page.waitForFunction(() => scrollY > 200);
+    await page.waitForFunction(() => document.querySelector('.app-header').getBoundingClientRect().bottom <= 0);
+    await page.waitForFunction(rest => document.querySelector('.app-bottom-nav .bottom-inner').getBoundingClientRect().top > rest + 3, dockAtRest.y);
+    const dockWhileScrolling = await dock.boundingBox();
+    assert.ok(dockWhileScrolling.y - dockAtRest.y <= 6);
+    assert.ok(await positions.isVisible());
+    await page.screenshot({ path: path.join(fixtures, `${engine}-floating-dock-scrolling.png`) });
+    await page.evaluate(() => scrollBy(0, -24));
+    await page.waitForFunction(() => document.querySelector('.app-header').getBoundingClientRect().top >= -1);
+    assert.ok((await header.boundingBox()).height >= 60);
+    await page.screenshot({ path: path.join(fixtures, `${engine}-floating-chrome-return.png`) });
     await positions.tap();
     await page.waitForFunction(() => scrollY < 2);
     assert.deepEqual(fragments, []);
@@ -99,11 +113,14 @@ async function run() {
     await rank.tap();
     await page.waitForURL('**/web/leaderboard');
     assert.equal(await content.evaluate(el => getComputedStyle(el).animationName), 'none');
+    await page.evaluate(() => scrollTo(0, 400));
+    await page.clock.runFor(300);
+    assert.equal(await page.locator('body').evaluate(el => el.classList.contains('app-chrome-retracted')), false);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }
 }
 
-run().then(() => console.log(`${engine}: tab navigation, elapsed progress, back and reduced motion passed`))
+run().then(() => console.log(`${engine}: floating navigation, reverse scroll, elapsed progress, back and reduced motion passed`))
   .catch(error => { console.error(error); process.exitCode = 1; });
