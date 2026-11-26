@@ -216,6 +216,60 @@ def trade_spreads(signals, close=None, asof=None, direction="long"):
                 total_closed_spread=round(sum(t['spread'] for t in completed),2))
 
 
+def dashboard_setup(bars, plan, provisional=False):
+    """Descriptive context only. Use completed bars for the consolidation label."""
+    observed = bars[:-1] if provisional else bars
+    window = observed[-10:]
+    bias = 'unknown'
+    if len(window) == 10:
+        before, after = window[:5], window[5:]
+        upper = max(b['high'] for b in window)
+        lower = min(b['low'] for b in window)
+        midpoint = (upper + lower) / 2
+        ranges = [max(b['high'] - b['low'], abs(b['high'] - a['close']), abs(b['low'] - a['close']))
+                  for a, b in zip(window, window[1:])]
+        atr = sum(ranges) / len(ranges)
+        if 0 < upper - lower <= 4 * atr:
+            if min(b['low'] for b in after) > min(b['low'] for b in before) and sum(b['close'] > midpoint for b in window) >= 6:
+                bias = 'bullish'
+            elif max(b['high'] for b in after) < max(b['high'] for b in before) and sum(b['close'] < midpoint for b in window) >= 6:
+                bias = 'bearish'
+    strategy = plan.get('strategy')
+    watched = plan.get('watching') or plan.get('patterns') or []
+    level = number(plan.get('pattern_level'))
+    if strategy not in ('breakout', 'reversal', 'pullback', 'continuation') or strategy not in watched or not level or level <= 0:
+        level = None
+    return dict(bias=bias, level=round(level, 2) if level else None)
+
+
+def dashboard_signal(row, direction, *, details=False):
+    if row.get('current_action') == 'unconfirmed':
+        return dict(stage='stale', data_date=row.get('date'))
+    study = row.get('dashboard_setup') or {}
+    quote_at = row.get('observed_at') if row.get('provisional') else None
+    context = dict(stage='watch', data_date=row.get('date'), quote_at=quote_at, bias=study.get('bias'))
+    event_type = row.get('latest_event')
+    if event_type:
+        event = next((e for e in reversed(row.get('signals', []))
+                      if e['date'] == row.get('date') and e['type'] == event_type), None)
+        if event:
+            reason = (event.get('reason') or '').removeprefix('盤中暫定，收盤前可能消失：')
+            invalidated = event_type == 'exit' and ('硬停損' in reason.split('；')[0] or '反轉確認' in reason)
+            context.update(stage='provisional' if event.get('provisional') else 'invalidated' if invalidated else 'confirmed',
+                           action=event_type, invalidated=invalidated)
+            if details:
+                context.update(price=event.get('price'), reason=reason, computed_at=row.get('computed_at'))
+            return context
+    if row.get('current_action') == 'hold':
+        return dict(context, stage='held')
+    level, close = number(study.get('level')), number(row.get('price'))
+    distance = (level / close - 1) * (100 if direction == 'long' else -100) if level and close and close > 0 else None
+    stage = ('triggered' if row.get('signal_stage') == 'triggered' else
+             'near' if distance is not None and 0 <= distance <= 2 else 'watch')
+    return dict(context, stage=stage, level=level, basis_price=close if details and level else None,
+                distance_pct=round(distance, 2) if distance is not None else None)
+
+
 def latest_alerts(rows, asof):
     alerts=[]
     for row in rows:
@@ -617,7 +671,7 @@ def analyse(code, name, quote, history, now, intraday=False):
     return dict(code=code,name=name,observation_price=round(observation,2) if not position else None,family_checks=latest.get('family_checks',[]),space=latest['space'] if position else preview_space,pattern_label=('多方修復觀察' if 'repair' in latest['patterns'] else '多方趨勢觀察' if not latest['trigger'] and not position else None),risk_policy=latest.get('risk_policy'),risk_limit=round(latest['risk_limit']*100,2),date=bars[-1]['date'],price=bars[-1]['close'],provisional=provisional,
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
-                pattern_line=latest['pattern_line'],
+                pattern_line=latest['pattern_line'], dashboard_setup=dashboard_setup(bars, latest, provisional),
                 signal_stage='entry' if event and event['type']=='entry' else 'triggered' if latest['trigger'] else 'watch',
                 watch_date=max((watch_dates.get(k) or '' for k in latest['patterns']),default='') or None,
                 trigger_date=trigger_dates.get(latest['strategy']),
@@ -762,6 +816,8 @@ class ShortTermService:
         self.market_quotes = market_quotes
         self.background_slot = background_slot
         self.close_batch_lease = close_batch_lease
+        self.dashboard_snapshot = None
+        self.dashboard_legacy = {}
         self.close_not_before = time.monotonic() + close_startup_grace if close_startup_grace else 0
         self.card_quotes = {}
         self.card_quote_session = None
@@ -1400,7 +1456,39 @@ class ShortTermService:
                        for r in rows if r.get('watch_date')==day(expected) and r.get('current_action')!='unconfirmed' and not r.get('active')]
             notifications = live_action_notifications(cached, self.now()) if intraday and signals_current else []
             page_rows = []
+            snapshot_stamp = intraday, generated
+            if self.dashboard_snapshot != snapshot_stamp:
+                self.dashboard_snapshot = snapshot_stamp
+                self.dashboard_legacy.clear()
             for row in rows[offset:offset + limit]:
+                if (summary or code is not None) and row.get('current_action') not in ('unconfirmed', 'hold') and not row.get('latest_event') and not row.get('dashboard_setup'):
+                    cache_key = direction, row['code']
+                    if cache_key not in self.dashboard_legacy:
+                        bars = row.get('bars') or []
+                        if not bars and row.get('chart_data'):
+                            try:
+                                bars = json.loads(zlib.decompress(b64decode(row['chart_data'])))
+                            except (ValueError, zlib.error):
+                                pass
+                        study = {}
+                        if len(bars) >= 65:
+                            fraction = 1
+                            if row.get('provisional') and row.get('observed_at'):
+                                try:
+                                    stamp = datetime.fromisoformat(row['observed_at'])
+                                    fraction = (stamp.hour * 60 + stamp.minute - 540) / 270
+                                except ValueError:
+                                    pass
+                            if direction == 'short':
+                                from short_side import setup as short_setup
+                                plan = short_setup(bars, fraction)
+                            else:
+                                plan = setup(bars, {}, fraction)
+                            study = dashboard_setup(bars, plan, row.get('provisional'))
+                        if len(self.dashboard_legacy) >= 120:
+                            self.dashboard_legacy.pop(next(iter(self.dashboard_legacy)))
+                        self.dashboard_legacy[cache_key] = study
+                    row['dashboard_setup'] = self.dashboard_legacy[cache_key]
                 if summary:
                     confirmed = [event for event in row.get('signals', []) if not event.get('provisional')]
                     quote = row.get('display_quote') or {}
@@ -1414,10 +1502,13 @@ class ShortTermService:
                     card = {field: row.get(field) for field in fields}
                     card.update(trade=opened if position_group(row) == 'held' else
                                 last if position_group(row) == 'closed' else None)
+                    card['dashboard_signal'] = dashboard_signal(row, direction)
                     page_rows.append(card)
                     continue
                 allocated, spreads = expanded(row)
                 card = dict(row, signals=allocated, spreads=spreads)
+                if code is not None:
+                    card['dashboard_signal'] = dashboard_signal(row, direction, details=True)
                 chart_data = card.pop('chart_data', None)
                 if chart_data:
                     card['bars'] = json.loads(zlib.decompress(b64decode(chart_data)))

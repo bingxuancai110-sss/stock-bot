@@ -33,7 +33,7 @@
   if(!cached||cached.view!==viewKey(s)||!cached.data?.meta?.date)return null;
   var data=Object.assign({},cached.data);
   data.meta=Object.assign({},data.meta,{building:false,signals_current:false,previous_snapshot:true,error:message,position_counts:{unknown:data.meta.total}});
-  data.rows=data.rows.map(function(row){return Object.assign({},row,{current_action:'unconfirmed',position_group:'unknown',trade:null});});
+  data.rows=data.rows.map(function(row){return Object.assign({},row,{current_action:'unconfirmed',position_group:'unknown',trade:null,dashboard_signal:{stage:'stale'}});});
   data.notifications=[];
   return data;
  }
@@ -202,17 +202,20 @@
    '<thead><tr><th scope="col">標的</th><th scope="col">狀態</th><th scope="col">現價</th><th scope="col">'+(short?'放空':'進場')+
    '</th><th scope="col">'+(short?'回補':'出場')+'</th><th scope="col">每股價差</th></tr></thead><tbody>'+
    rows.map(function(r){
-    var g=group(r),heading='',q=r.display_quote||{},trade=r.trade||{},v=trade.spread;
+    var g=group(r),heading='',q=r.display_quote||{},trade=r.trade||{},v=trade.spread,signal=r.dashboard_signal||{};
     var status=g==='waiting'?(r.provisional&&r.latest_event==='entry'?'暫定進場':r.signal_stage==='triggered'?'已觸發':'觀察'):groupNames[g];
+    var phase=stageLabels[signal.stage]||'',bias=biasLabels[signal.bias];
+    var distance=signal.distance_pct!=null&&signal.distance_pct>=0?'距'+(short?'跌破':'突破')+' '+num(signal.distance_pct)+'%':'';
     if(!s.position&&s.sort==='signal'&&g!==previous){
      heading='<tr class="st-desk-group"><th scope="row" colspan="6">'+esc(g==='waiting'?'未進場／觀察':groupNames[g])+'</th></tr>';
     }
     previous=g;
     return heading+'<tr class="st-desk-row" data-code="'+esc(r.code)+'" data-position="'+esc(g)+'" data-open="'+(s.open===r.code)+'">'+
      '<th scope="row"><button type="button" class="st-desk-open" aria-expanded="'+(s.open===r.code)+'" aria-controls="st-detail-'+esc(r.code)+'"><b>'+
-     esc(r.code)+'</b><span title="'+esc(r.name)+'">'+esc(r.name)+'</span></button></th>'+
-     '<td><span class="st-desk-state" data-state="'+esc(g)+'">'+esc(status)+'</span></td>'+
-     '<td><b>'+price(q.price!=null?q.price:r.price)+'</b>'+(q.date||r.date?'<small>'+esc((q.date||r.date).slice(5).replace('-','/'))+'</small>':'')+'</td>'+
+     esc(r.code)+'</b><span title="'+esc(r.name)+'">'+esc(r.name)+'</span>'+(bias?'<small class="st-bias" data-bias="'+esc(signal.bias)+'">'+esc(bias)+'</small>':'')+'</button></th>'+
+     '<td><span class="st-desk-state" data-state="'+esc(g)+'">'+esc(status)+'</span>'+
+     (phase&&signal.stage!=='stale'?'<small class="st-phase" data-phase="'+esc(signal.stage)+'">'+esc(phase)+'</small>':'')+'</td>'+
+     '<td><b>'+price(q.price!=null?q.price:r.price)+'</b>'+(distance?'<small class="st-distance" title="以策略資料日價格計算">'+esc(distance)+'</small>':q.date||r.date?'<small>'+esc((q.date||r.date).slice(5).replace('-','/'))+'</small>':'')+'</td>'+
      '<td>'+price(trade.entry_price)+'</td><td>'+price(trade.exit_price)+'</td>'+
      '<td class="st-desk-spread '+spreadClass(v)+'"><b>'+(v==null?'—':(v>0?'+':v<0?'−':'')+price(Math.abs(v)))+'</b>'+
      (v==null?'':'<small>'+(g==='held'?'未實現':'已出場')+'</small>')+'</td></tr>';
@@ -302,6 +305,23 @@
    if(current.renderPending){clearTimeout(current.renderTimer);current.renderTimer=setTimeout(function(){if(current)render(current);},200);}
   },{passive:true});
  });
+ var stageLabels={near:'接近觸發',triggered:'待確認',provisional:'盤中暫定',confirmed:'收盤確認',invalidated:'失效',stale:'待更新'};
+ var biasLabels={bullish:'整理偏多',bearish:'整理偏空',unknown:'方向未明'};
+ function signalContext(r){
+  var info=r.dashboard_signal;
+  if(!info)return '';
+  var stage=stageLabels[info.stage]||(info.stage==='held'?'策略場內':'觀察中');
+  var stamp=info.quote_at?info.quote_at.slice(0,16).replace('T',' '):info.data_date;
+  var action=names[info.action];
+  var level=info.level==null?'':(r.direction==='short'?'跌破參考 ':'突破參考 ')+price(info.level);
+  var basis=info.basis_price!=null?' · 策略價 '+price(info.basis_price):'';
+  var distance=info.distance_pct!=null&&info.distance_pct>=0?' · 距參考價 '+num(info.distance_pct)+'%':'';
+  var reason=info.reason&&info.reason.split('；')[0];
+  return '<section class="st-signal-context" aria-label="訊號階段"><div><strong data-phase="'+esc(info.stage)+'">'+esc(stage)+'</strong>'+
+   (action?'<b>'+esc(action)+' '+price(info.price)+'</b>':biasLabels[info.bias]?'<b>'+esc(biasLabels[info.bias])+'</b>':'')+
+   (stamp?'<time>'+esc(stamp)+'</time>':'')+'</div>'+
+   (level?'<p>'+esc(level+distance+basis)+'</p>':'')+(reason?'<p>'+esc(reason)+'</p>':'')+'</section>';
+ }
  function timeline(r){
   var events=(r.signals||[]).slice().reverse();
   return '<section class="st-history" aria-label="訊號時間軸"><h4>訊號時間軸（'+events.length+'）</h4><p class="st-history-note">依日期由新到舊；歷史規則重播，不是當下的新買點。</p><ol>'+events.map(function(e){return '<li><button type="button" data-event="'+esc(e.id)+'"><span>'+esc(e.date)+'</span><b class="'+(['entry','add'].indexOf(e.type)>=0?'st-up':'st-down')+'">'+esc(names[e.type])+'</b><strong>'+price(e.price)+'</strong></button><span class="st-event-status">'+(e.provisional?'盤中暫定 · 未收棒':'歷史收盤規則重播')+'</span>'+sizing(e)+'<p class="st-event-reason"><b>理由：</b>'+esc((e.reason||'理由未保存').split('；')[0])+'</p><details><summary>查看當時數值與完整理由</summary><p>'+esc(e.reason||'此筆舊紀錄沒有保存理由，不補造原因。')+'</p></details><small>當時硬停損 '+price(e.stop)+' · 停利參考 '+price(e.target)+'</small></li>';}).join('')+'</ol>'+(events.length?'':'<p>這段資料尚無進出場紀錄，不補畫訊號。</p>')+'</section>';
@@ -313,7 +333,7 @@
    '<div class="st-chart-mode"><span class="st-chart-context"></span><button type="button" class="st-history-toggle" aria-pressed="false">查看歷史訊號</button></div>'+
    '<div class="st-chart-readout" aria-live="polite">滑動或點選查看日期與價格</div><div class="st-chart" role="group" aria-label="'+esc(r.name)+'日 K、動能與進出場訊號"></div>'+
    '<div class="st-chart-nav"><button type="button" data-step="-1" aria-label="查看較早K線">← 較早</button><span>'+(r.direction==='short'?'▼ 放空／加空　▲ 回補':'▲ 進場／加碼　▼ 減碼／出場')+'</span><button type="button" data-step="1" aria-label="查看較新K線">較新 →</button></div>'+
-   '<div class="st-inspector" aria-live="polite"></div><div class="st-checks">'+(r.checks||[]).map(function(c){return '<span data-passed="'+!!c.passed+'">'+(c.passed?'✓ ':'— ')+esc(c.label)+(c.passed?'成立':'待確認')+'</span>';}).join('')+'</div><div class="st-evidence"><span>'+(r.volume_estimated?'時間比例估算量比 ':'量比 ')+num(r.volume_ratio)+'</span>'+(r.institutional_buying?'<span>法人同買（前五個已完成交易日）</span>':'')+'</div>'+timeline(r)+'<div class="st-chip-detail"><h4>技術依據與法人參考</h4><dl><div><dt>近 20 日平均成交額（非門檻）</dt><dd>'+num(r.avg_turnover/10000)+' 萬元</dd></div><div><dt>近 20 日平均成交量（非門檻）</dt><dd>'+num(r.avg_volume/1000)+' 張</dd></div><div><dt>支撐參考</dt><dd>'+price(r.support)+'</dd></div><div><dt>上方歷史壓力</dt><dd>'+(r.resistance?price(r.resistance):'區間內無已知壓力')+'</dd></div><div><dt>外資近五日</dt><dd>'+num(chip.foreign)+' 張／'+num(chip.foreign_days)+' 日買超</dd></div><div><dt>投信近五日</dt><dd>'+num(chip.trust)+' 張／'+num(chip.trust_days)+' 日買超</dd></div><div><dt>法人淨買占五日成交量（參考）</dt><dd>'+num(r.chip_ratio)+'%</dd></div><div><dt>籌碼資料截至</dt><dd>'+esc(chip.date||'缺資料')+'</dd></div></dl></div>'+
+   signalContext(r)+'<div class="st-inspector" aria-live="polite"></div><div class="st-checks">'+(r.checks||[]).map(function(c){return '<span data-passed="'+!!c.passed+'">'+(c.passed?'✓ ':'— ')+esc(c.label)+(c.passed?'成立':'待確認')+'</span>';}).join('')+'</div><div class="st-evidence"><span>'+(r.volume_estimated?'時間比例估算量比 ':'量比 ')+num(r.volume_ratio)+'</span>'+(r.institutional_buying?'<span>法人同買（前五個已完成交易日）</span>':'')+'</div>'+timeline(r)+'<div class="st-chip-detail"><h4>技術依據與法人參考</h4><dl><div><dt>近 20 日平均成交額（非門檻）</dt><dd>'+num(r.avg_turnover/10000)+' 萬元</dd></div><div><dt>近 20 日平均成交量（非門檻）</dt><dd>'+num(r.avg_volume/1000)+' 張</dd></div><div><dt>支撐參考</dt><dd>'+price(r.support)+'</dd></div><div><dt>上方歷史壓力</dt><dd>'+(r.resistance?price(r.resistance):'區間內無已知壓力')+'</dd></div><div><dt>外資近五日</dt><dd>'+num(chip.foreign)+' 張／'+num(chip.foreign_days)+' 日買超</dd></div><div><dt>投信近五日</dt><dd>'+num(chip.trust)+' 張／'+num(chip.trust_days)+' 日買超</dd></div><div><dt>法人淨買占五日成交量（參考）</dt><dd>'+num(r.chip_ratio)+'%</dd></div><div><dt>籌碼資料截至</dt><dd>'+esc(chip.date||'缺資料')+'</dd></div></dl></div>'+
    '<p class="st-source">行情：'+esc(r.source)+(r.observed_at?' · 來源時間 '+esc(r.observed_at.slice(0,19).replace('T',' ')):'')+''+(r.direction==='short'?' · '+esc(r.short_eligibility||'未核實放空資格及券源')+'；價差未扣借券費、利息與交易成本。':' · 趨勢支撐跌破先警戒／減碼；硬停損仍可能直接出場。')+'</p>';
   if((r.family_checks||[]).length){var evidence=document.createElement('details');evidence.className='st-family-evidence';evidence.innerHTML='<summary>逐一型態檢查</summary><div class="st-family-scroll"><table><thead><tr><th>型態</th><th>確認</th><th>停損距離</th><th>首道關卡R</th><th>判斷</th></tr></thead><tbody>'+r.family_checks.map(function(f){return '<tr><th>'+esc(f.pattern||strategyNames[f.strategy])+'</th><td>'+esc(f.confirmation||(f.confirmed?'收盤確認':'待確認'))+'</td><td>'+num(f.risk_pct)+'%</td><td>'+num(f.rr)+'R</td><td>'+esc(f.entry?'符合進場':f.trigger?'風險／確認未齊':'型態未觸發')+'<small>'+esc(f.risk_policy==='trend_following'?'波段追蹤':'轉折空間')+'</small></td></tr>';}).join('')+'</tbody></table></div>';el.querySelector('.st-inspector').after(evidence);}
   el.querySelector('.st-history-toggle').onclick=function(){s.history=!s.history;s.event=null;s.end=null;inspect(s,r,el);draw(s,r,el);};

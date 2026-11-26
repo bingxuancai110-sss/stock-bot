@@ -15,6 +15,7 @@ with patch.object(ss,'setup',side_effect=controlled):row=ss.analyse('2330','隔�
 row['signals']=st.signal_allocations(row['signals'])
 for e in row['signals']:e['allocation']['label']={'entry':'首次放空100%','add':'加空首次股數50%'}[e['type']]
 row['spreads']=st.trade_spreads(row['signals'],row['price'],row['date'],direction='short')
+row['dashboard_signal']=st.dashboard_signal(row,'short',details=True)
 chart_low=min(bar['low'] for bar in b[-30:])
 chart_span=max(bar['high'] for bar in b[-30:])-chart_low
 row['pattern_line']=dict(start_date=b[-15]['date'],end_date=b[-1]['date'],
@@ -36,7 +37,7 @@ with sync_playwright() as p:
      r.fulfill(status=503, body='unavailable');return
     q=parse_qs(u.query);queries.append(q);d=q.get('direction',['long'])[0];directions.append(d)
     summary={key:row[key] for key in ('code','name','date','price','current_action','latest_event','provisional')}
-    summary.update(position_group='held',trade=row['spreads']['open'])
+    summary.update(position_group='held',trade=row['spreads']['open'],dashboard_signal=row['dashboard_signal'])
     shown=[summary] if d=='short' else []
     if shown and show_second[0]:
      shown.append(dict(summary,code=second['code'],name=second['name']))
@@ -47,6 +48,7 @@ with sync_playwright() as p:
   assert directions==['long','short']
   assert page.locator('[data-direction="short"]').get_attribute('aria-pressed')=='true'
   assert '場內' in page.locator('.st-desk-row').inner_text()
+  assert '收盤確認' in page.locator('.st-phase').inner_text()
   assert '+' in page.locator('.st-desk-spread').inner_text()
   assert queries[-1]['view']==['summary'] and queries[-1]['limit']==['40'] and page.locator('.st-chart').count()==0
   entry_text=page.locator('.st-desk-row td').nth(2).inner_text()
@@ -55,6 +57,7 @@ with sync_playwright() as p:
   assert page.locator('.st-desk-row td').nth(2).inner_text()==entry_text, 'metadata refresh overwrote entry price with position count'
   page.locator('.st-desk-open').click();page.locator('.st-chart svg').wait_for()
   assert queries[-1]['code']==['2330'] and page.locator('.st-momentum-bar').count()>0
+  assert '加空' in page.locator('.st-signal-context').inner_text()
   assert '上升趨勢線' in page.locator('.st-trend-label').text_content()
   assert page.locator('.st-pattern-extension').count()==1
   assert '▼ 放空／加空' in page.locator('.st-detail').inner_text()
