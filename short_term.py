@@ -18,8 +18,9 @@ from technical_space import long_space
 VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 24
-CLOSE_POOL = 4
-CLOSE_BATCH_RESERVE_MB = 192
+CLOSE_POOL = 16
+CLOSE_BATCH_RESERVE_MB = 112
+CLOSE_CHECKPOINT_RESERVE_MB = 80
 MAX_PICKS = 20
 SELECTION_VERSION = 15
 LIGHT_BATCH = 64
@@ -866,6 +867,28 @@ class ShortTermService:
         timer.start()
         print(f'短線記憶體暫緩，預計 {retry_at.isoformat()} 續掃', flush=True)
 
+    def queue_close_continuation(self, session):
+        """Continue a saved close scan promptly; scheduled calls remain the fallback."""
+        if not self.in_retry_window(session):
+            return
+        if not self.safe(reserve_mb=self.scan_reserve(False, closing_batch=True)):
+            with self.lock:
+                self.defer_for_memory(session)
+            return
+        with self.lock:
+            if self.running or not self.in_retry_window(session):
+                return
+            self.running = True
+            self.started = time.monotonic()
+            self.last_try = self.started
+            self.error = ''
+        try:
+            self.executor.submit(self.build)
+        except Exception:
+            with self.lock:
+                self.running = False
+                self.error = '背景佇列暫時無法接收，已保存掃描進度'
+
     def retry_after_memory(self, session, retry_at):
         with self.lock:
             if self.memory_retry_session != session or self.memory_retry_at != retry_at:
@@ -991,7 +1014,8 @@ class ShortTermService:
         for offset in range(0,len(universe),LIGHT_BATCH):
             if time.monotonic()>self.deadline:
                 raise RuntimeError('全市場技術行情回應逾時；保留原結果，稍後可重試')
-            if not self.safe(reserve_mb=self.scan_reserve(self.intraday())):
+            intraday = self.intraday()
+            if not self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
                 raise ScanMemoryDeferred('全市場初篩因記憶體餘裕不足暫停')
             batch=universe[offset:offset+LIGHT_BATCH]
             quotes=self.light(batch,{c:self.stock_meta[c]['market'] for c in batch}) or {}
@@ -1023,7 +1047,7 @@ class ShortTermService:
         ordered_codes = set(ordered)
         self.full_queue=ordered+[c for c in universe if c not in ordered_codes]
         for c,band in price_by_code.items():self.stock_meta[c]['price_band']=band
-        codes=self.full_queue[:MAX_POOL]
+        codes=self.full_queue[:(MAX_POOL if self.intraday() else CLOSE_POOL)]
         names={c:self.stock_meta[c]['name'] for c in codes};history={c:[] for c in codes}
         with self.lock:
             self.scan_meta.update(light_scanned=len(universe),light_quotes=quote_count,
@@ -1078,6 +1102,7 @@ class ShortTermService:
     def build(self):
         queued=False
         memory_deferred = False
+        continue_close = False
         intraday = self.intraday()
         session = (day(self.now()), intraday)
         lease_key = KEY + ':close-attempt'
@@ -1156,6 +1181,9 @@ class ShortTermService:
                     print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
             pause='';time_exhausted=False;live_observed=0
             for i,code in enumerate(codes):
+                # Release the prior symbol's large quote/history response before
+                # requesting another one on the free 512 MiB instance.
+                q=bars=short_row=row=None
                 if time.monotonic()>self.deadline:
                     pause='本批行情逾時，進度已保存，稍後接續';time_exhausted=True;break
                 if not self.safe(reserve_mb=reserve):
@@ -1255,7 +1283,8 @@ class ShortTermService:
                 payload['live_scan_observed_at'] = max(live_scan_at, previous_live_at or '') or None
             # Serializing the full checkpoint briefly duplicates its data. A
             # pressure spike here must leave the last persisted cursor usable.
-            if not self.safe(reserve_mb=reserve):
+            checkpoint_reserve = (CLOSE_CHECKPOINT_RESERVE_MB if not intraday else reserve)
+            if not self.safe(reserve_mb=checkpoint_reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，下次從已保存的進度繼續')
             if claimed_at:
                 print('短線收盤準備保存：%s/%s' % (len(covered), len(queue)), flush=True)
@@ -1263,6 +1292,8 @@ class ShortTermService:
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
+            continue_close = bool(not intraday and not complete and not memory_deferred and
+                                  self.in_retry_window(session))
             if (intraday and not complete and (not pause or time_exhausted) and
                     self.intraday() == intraday and day(self.now()) == cycle['day']):
                 if self.safe(reserve_mb=reserve):
@@ -1293,6 +1324,10 @@ class ShortTermService:
                     self.running=False
                     if memory_deferred:
                         self.defer_for_memory(session)
+            if continue_close:
+                timer = threading.Timer(0.25, self.queue_close_continuation, args=(session,))
+                timer.daemon = True
+                timer.start()
 
     def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False, summary=False, code=None):
         with self.lock:
