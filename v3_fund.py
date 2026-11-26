@@ -82,7 +82,7 @@ def quote(q,code,now,*,execution=False,side=None,shares=0):
 def valuation(state,quotes,now):
     now=ts(now)
     values={c:money(p['shares']*quote(quotes[c],c,now)) for c,p in state['positions'].items()}
-    cash=dec(state['cash']); equity=cash+sum(values.values(),D(0))
+    cash=dec(state['cash']); equity=cash+sum(values.values(),D(0))+sum((dec(x['amount']) for x in state.get('receivables',{}).values()),D(0))
     if equity<=0: raise ValueError('nonpositive equity')
     peak=max(dec(state['peak']),equity)
     drawdown=(peak-equity)/peak
@@ -135,14 +135,18 @@ class Ledger:
             db.execute('INSERT INTO marks VALUES(?,?)',(now.isoformat(),encode(r)))
             db.execute('UPDATE state SET payload=? WHERE id=1',(encode(s),))
             return r
-    def fill(self,*,event_id,revision,code,side,shares,sleeve,quotes,now,listed,is_trading_day,book_payload=None,ticker_payload=None,book_observed_at=None,limit=None):
+    def fill(self,*,event_id,revision,code,side,shares,sleeve,quotes,now,listed,is_trading_day,book_payload=None,ticker_payload=None,book_observed_at=None,limit=None,oddlot_payload=None,fee_policy=None):
         now=ts(now)
-        if not re.fullmatch(r'[A-Za-z0-9:_-]{1,100}',event_id) or side not in ('buy','sell') or type(shares) is not int or shares<=0 or shares%1000 or sleeve not in ('core','tactical','legacy'):
-            raise ValueError('invalid order; regular lots only')
+        if not re.fullmatch(r'[A-Za-z0-9:_-]{1,100}',event_id) or side not in ('buy','sell') or type(shares) is not int or shares<=0 or (shares%1000 if oddlot_payload is None else not 1<=shares<1000) or sleeve not in ('core','tactical','legacy'):
+            raise ValueError('invalid order or lot size')
         if code not in listed or not re.fullmatch(r'[0-9]{4}',code) or not is_trading_day(now.date()): raise ValueError('unverified listing/session')
         intent=dict(revision=revision,code=code,side=side,shares=shares,sleeve=sleeve,at=now.isoformat())
         if book_payload is not None:
             intent['book']=hashlib.sha256(encode([book_payload,ticker_payload,str(book_observed_at),str(limit)]).encode()).hexdigest()
+        if oddlot_payload is not None:
+            if book_payload is not None: raise ValueError('ambiguous execution evidence')
+            intent['oddlot']=hashlib.sha256(encode(oddlot_payload).encode()).hexdigest()
+        if fee_policy is not None: intent['fee_policy']=fee_policy
         digest=hashlib.sha256(encode(intent).encode()).hexdigest()
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
@@ -154,7 +158,24 @@ class Ledger:
             if not s['ready'] or s['version']!=revision or now<=ts(s['last_at']): raise ValueError('unreconciled, stale revision or time')
             v=valuation(s,quotes,now); p=s['positions'].get(code)
             if p and p['sleeve']!=sleeve: raise ValueError('sleeve mismatch')
-            if book_payload is None:
+            if oddlot_payload is not None:
+                from v3_management import oddlot_estimate
+                quote(quotes[code],code,now)
+                db.execute('CREATE TABLE IF NOT EXISTS oddlot_orders (id TEXT PRIMARY KEY, payload TEXT NOT NULL)')
+                saved=db.execute('SELECT payload FROM oddlot_orders WHERE id=?',(event_id,)).fetchone()
+                if not saved: raise ValueError('no prior paper order')
+                order=json.loads(saved[0])
+                if any(order[k]!=v for k,v in dict(code=code,side=side,shares=shares,sleeve=sleeve,revision=revision).items()): raise ValueError('order mismatch')
+                plan=oddlot_estimate(order,oddlot_payload,now)
+                if plan['status']!='paper_estimate': raise ValueError('no qualifying print')
+                if not dec(order['limit_down'])<dec(plan['price'])<dec(order['limit_up']): raise ValueError('print at limit')
+                # Prohibit oddlot sells after any same-day buy; no simulated oddlot day trading.
+                if side=='sell' and any(e.get('code')==code and e.get('side')=='buy' and ts(e['at']).date()==now.date() for e in (json.loads(r[0]) for r in db.execute('SELECT payload FROM events'))): raise ValueError('oddlot same-day sell blocked')
+                db.execute('CREATE TABLE IF NOT EXISTS consumed_prints (id TEXT PRIMARY KEY)')
+                if db.execute('SELECT 1 FROM consumed_prints WHERE id=?',(plan['print_id'],)).fetchone(): raise ValueError('print already consumed')
+                db.execute('INSERT INTO consumed_prints VALUES(?)',(plan['print_id'],))
+                gross=dec(plan['gross']); price=dec(plan['price'])
+            elif book_payload is None:
                 price=quote(quotes[code],code,now,execution=True,side=side,shares=shares)
                 gross=money(price*shares)
             else:
@@ -167,7 +188,14 @@ class Ledger:
                 if db.execute('SELECT 1 FROM consumed_books WHERE book_id=?',(b['book_id'],)).fetchone(): raise ValueError('book already consumed')
                 db.execute('INSERT INTO consumed_books VALUES(?)',(b['book_id'],))
                 gross=dec(plan['gross']); price=dec(plan['vwap'])
-            fee=money(gross*FEE); tax=money(gross*TAX) if side=='sell' else D(0)
+            if fee_policy is not None or oddlot_payload is not None:
+                from v3_management import costs
+                policy=dict(fee_policy or {})
+                if set(policy)-{'discount','minimum'}: raise ValueError('unsupported fee configuration')
+                charge=costs(gross,side,session='oddlot' if oddlot_payload is not None else 'regular',**policy)
+                fee,tax=dec(charge['fee']),dec(charge['tax'])
+            else:
+                fee=money(gross*FEE); tax=money(gross*TAX) if side=='sell' else D(0)
             cash=dec(s['cash']); positions=deepcopy(s['positions'])
             if side=='buy':
                 if sleeve=='legacy': raise ValueError('legacy buys blocked')
@@ -189,6 +217,8 @@ class Ledger:
             if cash<0: raise ValueError('negative cash')
             s.update(version=revision+1,last_at=now.isoformat(),peak=str(post['peak']),max_drawdown=str(max(dec(s.get('max_drawdown','0')),v['drawdown'],post['drawdown'])))
             result=dict(event_id=event_id,revision=s['version'],code=code,side=side,shares=shares,price=str(price),gross=str(gross),fee=str(fee),tax=str(tax),cash=str(cash),nav=str(post['nav']),paper_only=True,at=now.isoformat())
+            if oddlot_payload is not None:
+                result.update(execution_model='oddlot_print_estimate',print_id=plan['print_id'],actual_fill_verified=False)
             if book_payload is not None:
                 result.update(execution_model='visible_depth_estimate',book_id=b['book_id'],legs=plan['legs'])
             db.execute('UPDATE state SET payload=? WHERE id=1',(encode(s),))
