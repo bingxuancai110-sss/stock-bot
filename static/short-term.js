@@ -149,22 +149,13 @@
   var delta=row.getBoundingClientRect().top-top;
   if(Math.abs(delta)>1)scroller.scrollBy({top:delta,behavior:'instant'});
  }
- function visibleRowAnchor(s){
-  if(s.pageJump||s.viewChanged)return null;
-  var row=Array.from(s.el.querySelectorAll('.st-desk-row')).find(function(candidate){
-   var rect=candidate.getBoundingClientRect();
-   return rect.bottom>0&&rect.top<window.innerHeight;
-  });
-  if(!row&&s.open){
-   var detail=s.el.querySelector('.st-desk-detail');
-   if(detail&&detail.getBoundingClientRect().bottom>0&&detail.getBoundingClientRect().top<window.innerHeight)row=detail.previousElementSibling;
-  }
-  return row?{code:row.dataset.code,top:row.getBoundingClientRect().top,scroller:verticalScroller(row)}:null;
- }
- function restoreRowAnchor(s,anchor){
-  if(!anchor)return;
-  var row=s.el.querySelector('.st-desk-row[data-code="'+CSS.escape(anchor.code)+'"]');
-  if(row)keepRowAt(row,anchor.top,anchor.scroller.isConnected===false?verticalScroller(row):anchor.scroller);
+ function preserveScroll(root){
+  var scroller=verticalScroller(root);
+  var top=scroller===window?window.scrollY:scroller.scrollTop;
+  return function(){
+   var currentTop=scroller===window?window.scrollY:scroller.scrollTop;
+   if(Math.abs(currentTop-top)>1)scroller.scrollTo({top:top,behavior:'instant'});
+  };
  }
  function render(s,interactive){
   if(!alive(s))return;
@@ -176,10 +167,10 @@
    s.renderTimer=setTimeout(function(){render(s);},200);
    return;
   }
-  var visibleAnchor=visibleRowAnchor(s);
+  var restoreScroll=preserveScroll(s.el);
   if(!s.viewChanged&&s.rowsSignature===signature&&s.renderedView===view&&s.el.querySelector('.st-cards')){
    patchMeta(s);
-   restoreRowAnchor(s,visibleAnchor);
+   restoreScroll();
    return;
   }
   var previousDetail=s.el.querySelector('.st-desk-detail');
@@ -187,13 +178,18 @@
   var keepFocus=previousDetail&&previousDetail.contains(focus);
   var tableScroll=s.el.querySelector('.st-desk-scroll');
   var scrollLeft=tableScroll?tableScroll.scrollLeft:0;
+  var openSections=['.st-data','.st-rules','.st-price-audit details'].filter(function(selector){
+   return s.el.querySelector(selector)?.open;
+  });
   header(s);
+  openSections.forEach(function(selector){var section=s.el.querySelector(selector);if(section)section.open=true;});
   var host=s.el.querySelector('.st-cards');
   s.rowsSignature=signature;s.renderedView=view;s.renderPending=false;
   if(!rows.length){
    var meta=s.data.meta||{};
    host.innerHTML=meta.building?'<div class="st-skeleton" aria-label="正在篩選候選"></div>':
     '<div class="st-empty"><b>'+(!meta.date?'暫無可顯示的短線快照':'目前沒有符合條件的股票')+'</b></div>';
+   restoreScroll();
    return;
   }
   var short=s.direction==='short',previous=null;
@@ -249,7 +245,7 @@
    }
    keepRowAt(row,top,scroller);
   });
-  restoreRowAnchor(s,visibleAnchor);
+  restoreScroll();
   if(s.pageJump){s.pageJump=false;s.el.querySelector('.st-list-summary').scrollIntoView({block:'start'});}
  }
  function unmountDetail(s){

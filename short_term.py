@@ -18,6 +18,7 @@ from technical_space import long_space
 VERSION = 'short-wave-v10'
 KEY = 'short_term:' + VERSION
 MAX_POOL = 24
+INTRADAY_PRIORITY_LIMIT = 8
 CLOSE_POOL = 16
 CLOSE_BATCH_RESERVE_MB = 112
 CLOSE_CHECKPOINT_RESERVE_MB = 80
@@ -983,6 +984,44 @@ class ShortTermService:
         self.trigger='雷達快照排程'
         return self.payload(refresh=True, quote_only=True)
 
+    def intraday_priority(self, previous, base, queue):
+        """Use saved levels and available quotes to prioritize a bounded set."""
+        now = self.now()
+        available = set(queue).difference(base)
+        with self.lock:
+            quotes = dict(self.card_quotes) if self.card_quote_session == (day(now), True) else {}
+        ranks = {}
+        for group in ('all_rows', 'short_rows'):
+            for row in previous.get(group, []):
+                code = row['code']
+                if code not in available:
+                    continue
+                try:
+                    checked = datetime.fromisoformat(row.get('computed_at') or '').timestamp()
+                except (TypeError, ValueError):
+                    checked = 0
+                if now.timestamp() - checked < 90:
+                    continue
+                quote = quotes.get(code) or row.get('market_quote')
+                fresh = live_quote_timestamp(quote, now) is not None
+                price = number(quote.get('price')) if fresh else number(row.get('price'))
+                if not price or price <= 0:
+                    continue
+                active = row.get('active')
+                levels = (row.get('stop'), row.get('target'), row.get('soft_support')) if active else (
+                    (row.get('dashboard_setup') or {}).get('level'),)
+                distance = min((abs(price - level) / level for value in levels
+                                if (level := number(value)) and level > 0), default=float('inf'))
+                stop = number(row.get('stop'))
+                crossed_stop = fresh and active and stop and stop > 0 and (
+                    price >= stop if group == 'short_rows' else price <= stop)
+                if active or distance <= .02:
+                    priority = 0 if crossed_stop else 1 if active and distance <= .02 else 2 if distance <= .02 else 3
+                    rank = (priority, checked, distance, code)
+                    if code not in ranks or rank < ranks[code]:
+                        ranks[code] = rank
+        return sorted(ranks, key=ranks.__getitem__)[:INTRADAY_PRIORITY_LIMIT]
+
     def inputs(self, keep):
         # The catalogue defines the universe. Institution activity never chooses
         # which symbols get a technical look. Do not hold a DB connection over HTTP.
@@ -1134,15 +1173,13 @@ class ShortTermService:
             if resume:
                 cycle=dict(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
                 cursor=cycle['cursor'];queue=cycle['queue']
-                # Closing bars do not change between batches. Rechecking model
-                # positions there wastes requests without improving freshness.
-                active=list(dict.fromkeys(r['code'] for r in previous.get('all_rows',[])+previous.get('short_rows',[]) if intraday and r.get('active') and r['code'] in self.stock_meta))
-                start=cycle.get('active_cursor',0)%max(1,len(active))
-                fast=(active+active)[start:start+min(16,len(active))]
                 batch_size = MAX_POOL if intraday else CLOSE_POOL
-                base=queue[cursor:cursor+batch_size-len(fast)]
-                codes=fast+[c for c in base if c not in fast]
-                cycle['active_cursor']=start+len(fast)
+                # Reserve at least sixteen of the 24 slots for forward progress.
+                regular = batch_size - INTRADAY_PRIORITY_LIMIT if intraday else batch_size
+                base = queue[cursor:cursor + regular]
+                fast = self.intraday_priority(previous, base, queue) if intraday else []
+                base = queue[cursor:cursor + batch_size - len(fast)]
+                codes = fast + [code for code in base if code not in fast]
                 names={c:self.stock_meta[c]['name'] for c in codes};history=self.histories(codes)
             else:
                 self.full_queue=[]
