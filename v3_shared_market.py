@@ -111,7 +111,17 @@ class Engine:
         pool = list(dict.fromkeys(held+[c for c in candidates if c in active]))[:200]
         with self.store.transaction() as s:
             self._clean(s,now)
-            s.update(listed=sorted(active), pool=pool, held=held, cursor=0)
+            old_priority = set(s.get('held', [])[:10])
+            old_rest = [c for c in s.get('pool', []) if c not in old_priority]
+            new_rest = [c for c in pool if c not in set(held[:10])]
+            cursor = 0
+            if old_rest and new_rest:
+                start = s.get('cursor', 0) % len(old_rest)
+                for c in old_rest[start:] + old_rest[:start]:
+                    if c in new_rest:
+                        cursor = new_rest.index(c)
+                        break
+            s.update(listed=sorted(active), pool=pool, held=held, cursor=cursor)
         return tuple(pool)
 
     def pool(self):
