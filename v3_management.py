@@ -60,6 +60,7 @@ def corporate_action(ledger, action, now):
             return json.loads(old[1])
         s=json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
         if not s['ready'] or now<=ts(s['last_at']): raise ValueError('unreconciled or stale action')
+        if s.get('accounting_mode')=='t2': raise ValueError('use verified corporate batch and claim payment')
         receivables=s.setdefault('receivables',{}); p=s['positions'].get(code)
         if kind=='cash_payment':
             claim=receivables.get(action.get('claim_id'))
@@ -89,7 +90,8 @@ def dashboard(ledger):
         db.execute('BEGIN')
         s=json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
         marks=[json.loads(r[0]) for r in db.execute('SELECT payload FROM marks ORDER BY as_of DESC LIMIT 30')]
-    return dict(paper_only=True,reconciled=s['ready'],history_complete=s['history_complete'],capital=s['capital'],cash=s['cash'],positions=s['positions'],fees=s['fees'],tax=s['tax'],receivables=s.get('receivables',{}),marks=marks,as_of=s['last_at'],revision=s['version'])
+    from v3_accounting import balances
+    return dict(settlement={k:str(v) for k,v in balances(s).items()},share_claims=s.get('share_claims',{}),paper_only=True,reconciled=s['ready'],history_complete=s['history_complete'],capital=s['capital'],cash=s['cash'],positions=s['positions'],fees=s['fees'],tax=s['tax'],receivables=s.get('receivables',{}),marks=marks,as_of=s['last_at'],revision=s['version'])
 
 
 def register_management(app, ledger, token):
