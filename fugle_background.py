@@ -247,7 +247,8 @@ def resolve_owner(get_connection, release_connection):
 
 
 def start_server_service(*, get_positions, merge_positions, get_connection,
-                         release_connection, load_snapshot, save_snapshot, now):
+                         release_connection, load_snapshot, save_snapshot, now,
+                         shared_collector=None):
     """Opt-in bootstrap. No key migration, API calls or thread when unconfigured.
 
     Configure the key using the host's protected environment-variable settings,
@@ -315,7 +316,7 @@ def start_server_service(*, get_positions, merge_positions, get_connection,
             finally:
                 release_connection(connection)
 
-    service = BackgroundService(owner, Collector(key), holdings=holdings,
+    service = BackgroundService(owner, Collector(key) if shared_collector is None else shared_collector, holdings=holdings,
                                 load=load, save=save, lease=lease)
     def run():
         stop = threading.Event()
