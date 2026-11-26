@@ -135,12 +135,14 @@ class Ledger:
             db.execute('INSERT INTO marks VALUES(?,?)',(now.isoformat(),encode(r)))
             db.execute('UPDATE state SET payload=? WHERE id=1',(encode(s),))
             return r
-    def fill(self,*,event_id,revision,code,side,shares,sleeve,quotes,now,listed,is_trading_day):
+    def fill(self,*,event_id,revision,code,side,shares,sleeve,quotes,now,listed,is_trading_day,book_payload=None,ticker_payload=None,book_observed_at=None,limit=None):
         now=ts(now)
         if not re.fullmatch(r'[A-Za-z0-9:_-]{1,100}',event_id) or side not in ('buy','sell') or type(shares) is not int or shares<=0 or shares%1000 or sleeve not in ('core','tactical','legacy'):
             raise ValueError('invalid order; regular lots only')
         if code not in listed or not re.fullmatch(r'[0-9]{4}',code) or not is_trading_day(now.date()): raise ValueError('unverified listing/session')
         intent=dict(revision=revision,code=code,side=side,shares=shares,sleeve=sleeve,at=now.isoformat())
+        if book_payload is not None:
+            intent['book']=hashlib.sha256(encode([book_payload,ticker_payload,str(book_observed_at),str(limit)]).encode()).hexdigest()
         digest=hashlib.sha256(encode(intent).encode()).hexdigest()
         with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
@@ -152,8 +154,20 @@ class Ledger:
             if not s['ready'] or s['version']!=revision or now<=ts(s['last_at']): raise ValueError('unreconciled, stale revision or time')
             v=valuation(s,quotes,now); p=s['positions'].get(code)
             if p and p['sleeve']!=sleeve: raise ValueError('sleeve mismatch')
-            price=quote(quotes[code],code,now,execution=True,side=side,shares=shares)
-            gross=money(price*shares); fee=money(gross*FEE); tax=money(gross*TAX) if side=='sell' else D(0)
+            if book_payload is None:
+                price=quote(quotes[code],code,now,execution=True,side=side,shares=shares)
+                gross=money(price*shares)
+            else:
+                from v3_execution import book, estimate
+                quote(quotes[code],code,now)
+                b=book(book_payload,ticker_payload,code=code,session='regular',observed_at=book_observed_at,now=now)
+                plan=estimate(b,side=side,shares=shares,limit=limit,now=now)
+                if plan['status']!='estimated_regular': raise ValueError('no complete depth estimate')
+                db.execute('CREATE TABLE IF NOT EXISTS consumed_books (book_id TEXT PRIMARY KEY)')
+                if db.execute('SELECT 1 FROM consumed_books WHERE book_id=?',(b['book_id'],)).fetchone(): raise ValueError('book already consumed')
+                db.execute('INSERT INTO consumed_books VALUES(?)',(b['book_id'],))
+                gross=dec(plan['gross']); price=dec(plan['vwap'])
+            fee=money(gross*FEE); tax=money(gross*TAX) if side=='sell' else D(0)
             cash=dec(s['cash']); positions=deepcopy(s['positions'])
             if side=='buy':
                 if sleeve=='legacy': raise ValueError('legacy buys blocked')
@@ -175,6 +189,8 @@ class Ledger:
             if cash<0: raise ValueError('negative cash')
             s.update(version=revision+1,last_at=now.isoformat(),peak=str(post['peak']),max_drawdown=str(max(dec(s.get('max_drawdown','0')),v['drawdown'],post['drawdown'])))
             result=dict(event_id=event_id,revision=s['version'],code=code,side=side,shares=shares,price=str(price),gross=str(gross),fee=str(fee),tax=str(tax),cash=str(cash),nav=str(post['nav']),paper_only=True,at=now.isoformat())
+            if book_payload is not None:
+                result.update(execution_model='visible_depth_estimate',book_id=b['book_id'],legs=plan['legs'])
             db.execute('UPDATE state SET payload=? WHERE id=1',(encode(s),))
             db.execute('INSERT INTO events VALUES(?,?,?)',(event_id,digest,encode(result)))
             return result
