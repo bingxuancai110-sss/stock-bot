@@ -94,4 +94,19 @@ class Tests(unittest.TestCase):
     def test_conviction_reduce(self):
         s=self.ready(positions={'2330':dict(shares=2000,basis='200000',sleeve='core')})
         r=proposal(s,self.q,self.now,code='2330',conviction='.2',sleeve='core');self.assertEqual((r['action'],r['shares']),('sell',1000))
+    def test_drawdown_cash_floor_independent(self):
+        codes=['2382','2345','3017']
+        self.ready(positions={c:dict(shares=1000,basis='1300000',sleeve='core') for c in codes},cash='4100000')
+        self.q.update({c:self.row(c,1300) for c in codes})
+        with self.assertRaisesRegex(ValueError,'cash or single-stock cap'):self.fill(shares=2000)
+        self.assertEqual(self.l.read()['cash'],'4100000')
+    def test_concurrent_duplicate(self):
+        from concurrent.futures import ThreadPoolExecutor
+        self.ready()
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            result=list(ex.map(lambda _:self.fill(),range(2)))
+        self.assertEqual(result[0],result[1]);self.assertEqual(self.l.read()['version'],1)
+    def test_future_benchmark_not_used(self):
+        b={'TAIEX_total_return':dict(date='2026-11-26',base_date='2026-11-12',total_return=True,base=100,value=95,as_of=(self.now+timedelta(seconds=1)).isoformat())}
+        self.assertEqual(performance(self.ready(),{},self.now,b)['benchmark_excess_pct'],{})
 if __name__=='__main__':unittest.main()
