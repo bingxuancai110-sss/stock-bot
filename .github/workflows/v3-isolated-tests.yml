@@ -8,13 +8,29 @@ jobs:
   v3-unit-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: v3test
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: v3test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U v3test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      V3_TEST_DATABASE_URL: postgresql://v3test:test-only-password@localhost:5432/v3test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install Flask==3.0.3 requests
-      - name: Require Flask and run all V3 tests
+      - run: python -m pip install Flask==3.0.3 requests psycopg2-binary
+      - name: Require dependencies and run all V3 tests
         run: |
-          python -c "import flask"
-          python -m unittest -v test_v3_market_api
+          python -c "import flask, psycopg2"
+          python -m unittest -v test_v3_market_api test_v3_shared_market test_v3_postgres_market
