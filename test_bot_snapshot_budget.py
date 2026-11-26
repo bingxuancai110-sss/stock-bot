@@ -88,4 +88,30 @@ class GateTests(unittest.TestCase):
         def fail():raise Deferred('retry')
         self.g.handlers['review']=(5,160,fail);self.g.submit('review');self.assertEqual(self.g.tick(),'deferred');self.assertFalse(self.g.submit('review'))
 
+class PostgresSnapshotTests(unittest.TestCase):
+    def test_real_sql_version_projection_and_size_cap(self):
+        import os
+        url=os.environ.get('V3_TEST_DATABASE_URL')
+        if not url:self.skipTest('isolated PostgreSQL unavailable')
+        # The only permitted target is the CI loopback service.
+        from urllib.parse import urlsplit
+        target=urlsplit(url)
+        if target.hostname not in ('localhost','127.0.0.1','::1') or target.path!='/v3test':self.fail('refuse non-test database')
+        import psycopg2
+        conn=psycopg2.connect(url);self.addCleanup(conn.close)
+        with conn.cursor() as cur:
+            cur.execute('CREATE TEMP TABLE shared_data_snapshots(snapshot_key text PRIMARY KEY, data_date date, computed_at timestamptz, payload jsonb, source_meta jsonb)')
+            body=json.dumps({'rows':['x'*2000],'cycle':{'queue':['2330']},'selection_version':15})
+            cur.execute('INSERT INTO shared_data_snapshots VALUES(%s,CURRENT_DATE,NOW(),%s::jsonb,%s::jsonb)',(KEY,body,'{}'))
+        conn.commit()
+        reader=SQLReader(lambda:conn,lambda c:None,Meter());version=reader.metadata(KEY)
+        self.assertEqual(reader.body(KEY,version,'full',100),(None,))
+        small=reader.body(KEY,version,'cycle',1000)
+        self.assertEqual(json.loads(small[0])['payload']['cycle']['queue'],['2330'])
+        with conn.cursor() as cur:cur.execute("UPDATE shared_data_snapshots SET payload=payload || '{\"changed\":true}'::jsonb WHERE snapshot_key=%s",(KEY,))
+        conn.commit()
+        self.assertIsNone(reader.body(KEY,version,'full',10000))
+        new=reader.metadata(KEY);self.assertNotEqual(new,version)
+        self.assertTrue(json.loads(reader.body(KEY,new,'full',10000)[0])['payload']['changed'])
+
 if __name__=='__main__':unittest.main()
