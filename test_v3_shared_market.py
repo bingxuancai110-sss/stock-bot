@@ -86,7 +86,7 @@ class SharedTests(unittest.TestCase):
         self.assertEqual(len(self.session.calls),1)
     def test_429_cooldown_global(self):
         self.session.status=429
-        self.assertEqual(self.bot.fetch('bot','2000'),'rate_limited')
+        self.assertEqual(self.bot.fetch('bot','2000'),'provider_rate_limited')
         self.assertEqual(self.v3.fetch('v3','2001'),'rate_limited')
         self.assertEqual(len(self.session.calls),1)
         self.now+=timedelta(seconds=60)
@@ -150,6 +150,20 @@ class SharedTests(unittest.TestCase):
         self.assertFalse(data['complete'])
         self.assertFalse(data['execution_authorized'])
         self.assertEqual(data['missing'],['2003'])
+        self.assertEqual(len(self.session.calls),2)
+    def test_expired_lease_not_reported_as_update(self):
+        def delayed_parse(c,p,n):
+            self.now+=timedelta(seconds=31)
+            return self.parse(c,p,n)
+        self.bot.parse=delayed_parse
+        self.assertEqual(self.bot.fetch('bot','2000'),'lease_expired')
+        self.assertEqual(self.v3.read(['2000']),{})
+    def test_refresh_after_cache_ttl(self):
+        self.bot.fetch('bot','2000')
+        self.now+=timedelta(seconds=44)
+        self.assertEqual(self.v3.fetch('v3','2000'),'cache_hit')
+        self.now+=timedelta(seconds=1)
+        self.assertEqual(self.v3.fetch('v3','2000'),'updated')
         self.assertEqual(len(self.session.calls),2)
     def test_db_failure_no_fetch(self):
         self.bot.store=sqlite_store(str(Path(self.tmp.name)/'missing.db'))
