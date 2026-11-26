@@ -57,11 +57,34 @@ def test_saved_legacy_and_compact_charts_keep_the_same_card_history():
     assert not {'chart_data', 'bars', 'signals', 'trailing'} & summary['rows'][0].keys()
     assert detail['rows'][0]['bars'] == original
     assert detail['rows'][0]['signals'] == first['rows'][0]['signals']
+    assert 'stage' in summary['rows'][0]['dashboard_signal']
+    assert 'stage' in detail['rows'][0]['dashboard_signal']
     assert not s.payload(code='2317')['rows']
     serialized = st.json.loads(st.json.dumps(s.cached))
     s.loaded = False
     s.store.load.return_value = {'payload': serialized}
     assert st.json.loads(st.json.dumps(s.payload())) == st.json.loads(st.json.dumps(first))
+
+
+def test_dashboard_signal_keeps_price_context_separate_from_entry_confirmation():
+    bars = [dict(high=105, low=95 if i<5 else 99, close=103) for i in range(10)]
+    plan = dict(strategy='breakout', patterns=['breakout'], pattern_level=101.8)
+    study = st.dashboard_setup(bars, plan)
+    assert study == dict(bias='bullish', level=101.8)
+    flipped = [dict(high=200-b['low'], low=200-b['high'], close=200-b['close']) for b in bars]
+    assert st.dashboard_setup(flipped, plan)['bias'] == 'bearish'
+    assert st.dashboard_setup(bars+[dict(high=140, low=72, close=72)], plan, provisional=True)['bias'] == 'bullish'
+    row = dict(date='2026-11-17', price=100, dashboard_setup=study, current_action='wait')
+    assert st.dashboard_signal(row, 'long')['stage'] == 'near'
+    assert st.dashboard_signal(row, 'long')['distance_pct'] == 1.8
+    assert st.dashboard_signal(row, 'short')['stage'] == 'watch'
+    row.update(current_action='exit', latest_event='exit', signals=[
+        dict(date=row['date'], type='exit', price=97, reason='確認觸及硬停損；參考價 97', provisional=True)])
+    assert st.dashboard_signal(row, 'long')['stage'] == 'provisional'
+    row['signals'][0]['provisional'] = False
+    assert st.dashboard_signal(row, 'long', details=True)['stage'] == 'invalidated'
+    row['current_action'] = 'unconfirmed'
+    assert st.dashboard_signal(row, 'long') == dict(stage='stale', data_date=row['date'])
 
 
 def test_compressed_checkpoint_preserves_rows_and_keeps_legacy_readable():
