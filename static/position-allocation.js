@@ -73,6 +73,8 @@
     const input=form.elements.portfolio_cash;
     const button=form.querySelector('button[type="submit"]');
     const status=form.querySelector('[data-position-cash-status]');
+    // The hidden "action" input shadows form.action on HTML forms.
+    const url=form.getAttribute('action');
     const body=new FormData(form);
     body.set('response_format','json');
     form.dataset.saving='true';
@@ -82,7 +84,7 @@
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(),15000);
     try{
-      const response=await fetch(form.action,{
+      const response=await fetch(url,{
         method:'POST',credentials:'same-origin',headers:{Accept:'application/json'},body,signal:controller.signal,
       });
       if(response.status===401){
