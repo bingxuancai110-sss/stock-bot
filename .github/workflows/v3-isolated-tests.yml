@@ -33,4 +33,4 @@ jobs:
       - name: Require dependencies and run all V3 tests
         run: |
           python -c "import flask, psycopg2"
-          python -m unittest -v test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool
+          python -m unittest -v test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool test_v3_fund
