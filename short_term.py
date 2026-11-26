@@ -93,7 +93,7 @@ def with_official_live_bar(history, live, now):
 def live_action_notifications(snapshot, now):
     """Publish only the current provisional actions for both directions."""
     today = day(now)
-    current = set()
+    current = {}
     for group in (snapshot.get('all_rows', snapshot.get('rows', [])), snapshot.get('short_rows', [])):
         for row in group:
             if row.get('date') != today or not row.get('latest_event'):
@@ -103,11 +103,33 @@ def live_action_notifications(snapshot, now):
             except (ValueError, TypeError):
                 continue
             if -60 <= age <= 1200:
-                current.add((row['code'], row.get('direction', 'long'), row['latest_event']))
-    return [{key: event.get(key) for key in ('code', 'name', 'type', 'direction', 'price', 'date', 'observed_at')}
-            for event in snapshot.get('alerts', [])
-            if event.get('date') == today and event.get('provisional') and
-            (event['code'], event.get('direction', 'long'), event['type']) in current]
+                current[row['code'], row.get('direction', 'long'), row['latest_event']] = row
+    notifications = []
+    for event in snapshot.get('alerts', []):
+        if event.get('date') != today or not event.get('provisional'):
+            continue
+        row = current.get((event['code'], event.get('direction', 'long'), event['type']))
+        if row is None:
+            continue
+        notification = {key: event.get(key) for key in ('code', 'name', 'type', 'direction', 'date', 'observed_at')}
+        notification.update(price=event.get('first_signal_price', event.get('price')),
+                            signal_quote_at=event.get('signal_quote_at'),
+                            latest_price=row.get('price'), latest_quote_at=row.get('observed_at'))
+        notifications.append(notification)
+    return notifications
+
+
+def stamp_signal(event, prior, row, detected_at):
+    if prior and not prior.get('provisional') and not event.get('provisional'):
+        return prior
+    if event.get('provisional') and prior and prior.get('provisional') and prior.get('observed_at'):
+        return dict(event, observed_at=prior['observed_at'],
+                    first_signal_price=prior.get('first_signal_price', prior.get('price')),
+                    signal_quote_at=prior.get('signal_quote_at'))
+    if event.get('provisional'):
+        return dict(event, observed_at=detected_at, first_signal_price=event.get('price'),
+                    signal_quote_at=row.get('observed_at'))
+    return dict(event, observed_at=detected_at)
 
 
 def clarity_rank(row):
@@ -1289,9 +1311,11 @@ class ShortTermService:
             rows=list(rows_by_code.values())
             rows.sort(key=clarity_rank)
             old={e['id']:e for r in previous.get('all_rows',previous.get('rows',[]))+previous.get('short_rows',[]) for e in r.get('signals',[])}
-            for row in rows+short_rows:
-                row['signals']=[(old.get(e['id']) if not e.get('provisional') and not (old.get(e['id']) or {}).get('provisional') else None)
-                                or dict(e,observed_at=self.now().isoformat()) for e in row['signals']]
+            detected_at = self.now().isoformat()
+            for row in rows + short_rows:
+                if row['code'] in finished:
+                    row['signals'] = [stamp_signal(event, old.get(event['id']), row, detected_at)
+                                      for event in row['signals']]
             advanced=0
             for c in base:
                 if c not in finished:break
