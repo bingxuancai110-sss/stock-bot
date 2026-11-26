@@ -76,7 +76,7 @@ def test_card_keeps_real_flat_price_but_marks_old_quote_pending_and_shows_times(
     assert '富果' in text
 
 
-def test_cash_is_sorted_with_stocks_and_report_displays_the_same_weight(compiled):
+def test_cash_is_sorted_with_stocks_and_omitted_from_report(compiled):
     ns = dict(FlexSendMessage=lambda **kw: kw, taiwan_today=lambda: datetime(2026,11,10).date(),
               stock_display_name=lambda c, *a: c, short_company_name=lambda n: n,
               get_position_change_logs=lambda *a, **k: [], _filter_voided_same_day_logs=lambda logs: logs)
@@ -90,10 +90,20 @@ def test_cash_is_sorted_with_stocks_and_report_displays_the_same_weight(compiled
     assert [(name['text'], weight['text']) for name, weight in labels] == [
         ('2330（2330）', '53.3%'), ('現金', '33.3%'), ('2383（2383）', '13.3%')]
     report = ns['_line_hidden_operation_report']('owner', positions, prices, cash_amount=50)
-    cash = report['contents']['body']['contents'][1]['contents']
-    assert [column['text'] for column in cash] == ['現金', '33.3%']
-    report_pending = ns['_line_hidden_operation_report']('owner', positions, {}, cash_amount=100)
-    assert report_pending['contents']['body']['contents'][1]['contents'][1]['text'] == '待確認'
+    assert [row['text'] for row in report['contents']['body']['contents']] == [
+        '操作日報', '目前沒有操作紀錄。']
+    log = dict(id=1, code='2330', trade_date=datetime(2026,11,10).date(),
+               action='add', shares_delta=1)
+    enrich = Mock(return_value=[dict(log, shares_before=1, shares_after=2,
+                                    event_weight=10, current_weight=80/150*100)])
+    ns.update(get_position_change_logs=lambda *a, **k: [log],
+              _position_change_date=lambda value: value,
+              _position_change_journal_status=lambda item: ('加碼', ''),
+              enrich_position_change_logs=enrich)
+    report = ns['_line_hidden_operation_report']('owner', positions, prices, cash_amount=50)
+    assert '現金' not in str(report)
+    assert '53.33%' in str(report)
+    enrich.assert_called_once_with([log], positions, prices, 150)
 
 @pytest.mark.parametrize('price,expected', [(109.5, '漲停'), (89.6, '跌停'), (105, None)])
 def test_official_limits_survive_collector_and_render_distinct_badges(compiled, price, expected):

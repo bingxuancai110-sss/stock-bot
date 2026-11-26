@@ -28779,7 +28779,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261122-1"></script>
-<script defer src="/static/position-allocation.js?v=20261126-1"></script>
+<script defer src="/static/position-allocation.js?v=20261126-2"></script>
 <script defer src="/static/fugle-live.js?v=20261126-1"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
@@ -32730,7 +32730,8 @@ def render_position_allocation(allocation_items, total_value, held_count, cash_a
 def web_positions(uid):
     positions_page_started = time.monotonic()
     cash_json = (request.method == "POST" and request.form.get("action") == "save_cash"
-                 and request.headers.get("Accept") == "application/json")
+                 and (request.form.get("response_format") == "json"
+                      or request.headers.get("Accept") == "application/json"))
     # 寫入前先驗證 CSRF。失敗不能清除快取，也不能回 HTTP 200 讓前端誤認新增成功。
     if request.method == "POST" and not valid_web_csrf(uid):
         print("⚠️ 持股 POST CSRF 驗證失敗（不記錄 token）", flush=True)
@@ -54492,7 +54493,6 @@ def _line_hidden_combined_portfolio_flex(user_id):
 
 def _line_hidden_operation_report(user_id, positions=None, price_map=None, cash_amount=0.0):
     """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字；狀態標籤使用合法 Flex box 容器。"""
-    from line_holdings_layout import report_cash
     positions = merge_positions(get_positions(user_id)) if positions is None else positions
     price_map = dict(price_map or {})
     held_value = 0.0
@@ -54511,11 +54511,9 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None, cash_
             break
         held_value += price * shares
     total_assets = held_value + (cash_amount or 0) if weights_complete else 0.0
-    cash_row = report_cash(cash_amount / total_assets * 100 if total_assets else
-                           0.0 if weights_complete else None)
     logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
     if not logs:
-        return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},cash_row,{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
+        return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
 
     # 日報只取「最近一個確實有有效操作」的日期：若今天沒有任何有效操作，
     # 自動往前找上一個有操作的交易日，不顯示空白的當日區塊，也不硬顯示今天日期。
@@ -54539,7 +54537,6 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None, cash_
             alt_text="近期操作日報",
             contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[
                 {"type":"text","text":"近期操作日報","size":"xl","weight":"bold","color":"#203449"},
-                cash_row,
                 {"type":"text","text":"目前沒有有效的持股操作紀錄。","size":"sm","color":"#667085","margin":"md","wrap":True}
             ]}}
         )
@@ -54610,7 +54607,6 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None, cash_
     body = [
         {"type":"text","text":"操作日報","size":"xl","weight":"bold","color":navy},
         {"type":"text","text":day_text,"size":"md","weight":"bold","color":"#2D6F9F","margin":"sm"},
-        cash_row,
         {"type":"separator","margin":"md","color":"#E5EAF0"},
         {"type":"box","layout":"horizontal","paddingAll":"9px","backgroundColor":"#F7F9FC","contents":[
             {"type":"text","text":"標的","size":"xs","weight":"bold","color":muted,"flex":3,"wrap":True},

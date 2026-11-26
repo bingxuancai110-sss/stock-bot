@@ -92,11 +92,3 @@ def render_holdings(rows):
                       {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "sm",
                        "contents": quote_footer(stock_rows)}])
     return items
-
-
-def report_cash(weight):
-    weight_label = f"{weight:.1f}%" if weight is not None else "待確認"
-    return {"type": "box", "layout": "horizontal", "paddingAll": "10px", "margin": "sm",
-            "cornerRadius": "8px", "backgroundColor": "#EFF3F7", "contents": [
-                text("現金", weight="bold", flex=1),
-                text(weight_label, weight="bold", align="end", flex=0)]}

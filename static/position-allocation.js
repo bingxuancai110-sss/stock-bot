@@ -74,6 +74,7 @@
     const button=form.querySelector('button[type="submit"]');
     const status=form.querySelector('[data-position-cash-status]');
     const body=new FormData(form);
+    body.set('response_format','json');
     form.dataset.saving='true';
     button.disabled=true;
     input.readOnly=true;
