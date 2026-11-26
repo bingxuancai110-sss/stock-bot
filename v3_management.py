@@ -91,7 +91,7 @@ def dashboard(ledger):
         s=json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
         marks=[json.loads(r[0]) for r in db.execute('SELECT payload FROM marks ORDER BY as_of DESC LIMIT 30')]
     from v3_accounting import balances
-    return dict(settlement={k:str(v) for k,v in balances(s).items()},share_claims=s.get('share_claims',{}),paper_only=True,reconciled=s['ready'],history_complete=s['history_complete'],capital=s['capital'],cash=s['cash'],positions=s['positions'],fees=s['fees'],tax=s['tax'],receivables=s.get('receivables',{}),marks=marks,as_of=s['last_at'],revision=s['version'])
+    return dict(data_mode=s.get('data_mode','historical_or_reconciled'),settlement={k:str(v) for k,v in balances(s).items()},share_claims=s.get('share_claims',{}),paper_only=True,reconciled=s['ready'],history_complete=s['history_complete'],capital=s['capital'],cash=s['cash'],positions=s['positions'],fees=s['fees'],tax=s['tax'],receivables=s.get('receivables',{}),marks=marks,as_of=s['last_at'],revision=s['version'])
 
 
 def register_management(app, ledger, token):
