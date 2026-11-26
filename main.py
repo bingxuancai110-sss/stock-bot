@@ -2888,21 +2888,23 @@ def save_portfolio_cash(user_id, raw):
     from decimal import Decimal
     raw = str(raw or "").strip().replace(",", "")
     if not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,2})?", raw):
-        return "請輸入有效的台幣金額，最小為 0 元，最多兩位小數。"
+        return None, "請輸入有效的台幣金額，最小為 0 元，最多兩位小數。", 400
     conn = None
     try:
         conn = get_db_connection()
         with conn.cursor() as cur:
             cur.execute("""INSERT INTO user_profile(user_id, portfolio_cash)
                 VALUES (%s, %s) ON CONFLICT(user_id) DO UPDATE
-                SET portfolio_cash=EXCLUDED.portfolio_cash""", (user_id, Decimal(raw)))
+                SET portfolio_cash=EXCLUDED.portfolio_cash
+                RETURNING portfolio_cash""", (user_id, Decimal(raw)))
+            saved = cur.fetchone()[0]
         conn.commit()
-        return ""
+        return str(saved), "", 200
     except Exception as exc:
         if conn is not None:
             conn.rollback()
         print("⚠️ 儲存現金餘額未確認：" + type(exc).__name__, flush=True)
-        return "暫時無法確認現金餘額，請重新開啟持股頁查看。"
+        return None, "暫時無法確認儲存，金額已保留，可以再試一次。", 503
     finally:
         if conn is not None:
             release_db_connection(conn)
@@ -28777,7 +28779,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261122-1"></script>
-<script defer src="/static/fugle-live.js?v=20261125-cash"></script>
+<script defer src="/static/position-allocation.js?v=20261126-1"></script>
+<script defer src="/static/fugle-live.js?v=20261126-1"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -29582,7 +29585,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   document.addEventListener('submit', function(e) {{
     var form = e.target;
     if (!form) return;
-    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"], form[data-settings-theme-form]')) return;
+    if (form.matches('form.add, form.sellpanel, form[data-form-purpose="leaderboard-settlement"], form[data-settings-theme-form], form[data-position-cash-form]')) return;
     if (form.dataset.submitted === '1') {{
       e.preventDefault();
       return;
@@ -32676,12 +32679,13 @@ def render_position_allocation(allocation_items, total_value, held_count, cash_a
     allocation_items.sort(key=lambda item: item["value"], reverse=True)
     cash_value = f"{cash_amount:,.2f}".rstrip("0").rstrip(".") if cash_amount is not None else "暫時無法讀取"
     cash_form = f'''<details id="position-cash" class="position-cash"{' open' if reopen else ''}>
-  <summary><b>現金餘額</b><span data-home-sensitive>{cash_value}{' 元' if cash_amount is not None else ''}</span><span>編輯</span></summary>
-  <form method="post" action="/web/positions#position-cash">
+  <summary><b>現金餘額</b><span data-home-sensitive data-position-cash-balance>{cash_value}{' 元' if cash_amount is not None else ''}</span><span>編輯</span></summary>
+  <form method="post" action="/web/positions#position-cash" data-position-cash-form>
     {csrf_hidden_input()}<input type="hidden" name="action" value="save_cash">
     <label for="position-cash-input">台幣金額</label>
     <input id="position-cash-input" name="portfolio_cash" type="number" min="0" max="999999999999.99" step="0.01" inputmode="decimal" value="{cash_amount if cash_amount is not None else ''}" required>
     <button type="submit">儲存</button>
+    <span class="position-cash-status" data-position-cash-status role="status"></span>
   </form>
 </details>'''
     if allocation_items and asset_total and allocation_ready:
@@ -32710,7 +32714,7 @@ def render_position_allocation(allocation_items, total_value, held_count, cash_a
             _arc_offset += _arc_len
     else:
         _arc_html, _legend_html = [], []
-    return f'''<section class="position-allocation" data-allocation-cash="{cash_amount if cash_amount is not None else ''}" aria-label="資產配置互動圖表">
+    return f'''<section class="position-allocation" data-allocation-ready="{str(allocation_ready).lower()}" data-allocation-cash="{cash_amount if cash_amount is not None else ''}" aria-label="資產配置互動圖表">
   <div class="position-allocation-head"><h2>資產配置</h2><button type="button" data-allocation-reset{' hidden' if not _arc_html else ''}>顯示全部</button></div>
   {cash_form}
   <p class="position-allocation-pending"{' hidden' if allocation_ready else ''}>資料尚未齊全，比例待確認。</p>
@@ -32725,10 +32729,20 @@ def render_position_allocation(allocation_items, total_value, held_count, cash_a
 @web_login_required
 def web_positions(uid):
     positions_page_started = time.monotonic()
+    cash_json = (request.method == "POST" and request.form.get("action") == "save_cash"
+                 and request.headers.get("Accept") == "application/json")
     # 寫入前先驗證 CSRF。失敗不能清除快取，也不能回 HTTP 200 讓前端誤認新增成功。
     if request.method == "POST" and not valid_web_csrf(uid):
         print("⚠️ 持股 POST CSRF 驗證失敗（不記錄 token）", flush=True)
+        if cash_json:
+            return jsonify(ok=False, message="安全驗證已過期，請重新開啟持股頁。"), 403, {"Cache-Control": "no-store"}
         return respond_page("持股", '<div class="msg">安全驗證已過期，請重新整理後再送出。</div>', "positions"), 400
+    if cash_json:
+        saved, message, status = save_portfolio_cash(uid, request.form.get("portfolio_cash"))
+        if saved is not None:
+            for cache_page in ("positions", "positions-fast"):
+                _web_fragment_cache_clear(cache_page, uid)
+        return jsonify(ok=saved is not None, cash=saved, message=message), status, {"Cache-Control": "no-store"}
     # 持股有任何寫入操作時，先清除同一位使用者的持股／首頁頁面快取，避免舊數字殘留。
     if request.method == "POST":
         for _cache_page in ("positions", "positions-fast", "portfolio", "portfolio-fast"):
@@ -32798,7 +32812,7 @@ def web_positions(uid):
     if request.method == "POST":
         action = request.form.get("action")
         if action == "save_cash":
-            msg = save_portfolio_cash(uid, request.form.get("portfolio_cash"))
+            _, msg, _ = save_portfolio_cash(uid, request.form.get("portfolio_cash"))
             if not msg:
                 token = request.args.get("t")
                 token_query = "&t=" + quote(token, safe="") if token else ""
@@ -33885,6 +33899,8 @@ body #app-page-content .position-allocation-head button{border:0!important;borde
 .position-cash form label{grid-column:1/-1;font-size:12px}
 .position-cash input{min-width:0;padding:8px 10px;font-size:16px}
 .position-cash form button{padding:8px 12px;border:0;border-radius:9px;background:var(--brand,#244D68);color:#fff}
+.position-cash-status{grid-column:1/-1;font-size:12px;color:var(--ink,#243647)}
+.position-cash-status:empty{display:none}
 .position-allocation-pending{font-size:12px;margin:8px 0 0;color:var(--muted,#526879)}
 body #app-page-content .position-allocation-body{display:grid!important;grid-template-columns:126px minmax(0,1fr)!important;gap:13px!important;align-items:center!important}
 body #app-page-content .position-allocation-visual{position:relative!important;width:126px!important;height:126px!important}

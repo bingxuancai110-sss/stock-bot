@@ -367,51 +367,6 @@
     }catch(ignore){if(running&&mine===generation)failed('無法取得行情連線，已停止本次連線；已記住的金鑰保留。請稍後按啟用重試。');}
     finally{if(lockGeneration===mine)lockGeneration=null;}
   }
-  function ensureAllocation(items){
-    let box=document.querySelector('.position-allocation');
-    if(!box){box=document.createElement('section');box.className='position-allocation';box.innerHTML='<div class="position-allocation-head"><h2>持股配置</h2><button type="button" data-allocation-reset>顯示全部</button></div><div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="富果行情持股市值權重"><circle cx="50" cy="50" r="31" fill="#fff"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight data-home-sensitive>100%</strong><small data-allocation-center-value data-home-sensitive></small></div></div><div class="position-allocation-legend"></div></div><div class="allocation-selection" aria-live="polite"><span>組合概覽</span><strong>點選圓環或股票名稱</strong><small></small></div>';const card=document.querySelector('[data-position-code]');card.parentNode.insertBefore(box,card);}
-    const held=new Set(items.map(x=>x.code));box.querySelectorAll('[data-allocation-select],[data-allocation-code]').forEach(n=>{if(!held.has(n.dataset.allocationSelect||n.dataset.allocationCode))n.remove();});
-    const colors=['#2676A5','#D84B45','#14916C','#8165B5','#D29430','#3A8FA3','#CF6A36','#6E8498'];
-    items.forEach((item,index)=>{
-      if(box.querySelector('[data-allocation-select="'+item.code+'"]'))return;
-      const name=item.code==='cash'?'現金':names[item.code]||item.code;
-      const color=item.code==='cash'?'#5E7188':colors[index%colors.length];
-      const button=document.createElement('button'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('b');button.type='button';button.className='allocation-item';button.dataset.allocationSelect=item.code;button.dataset.allocationName=name;button.setAttribute('aria-pressed','false');value.setAttribute('data-home-sensitive','');dot.style.background=color;label.textContent=name;button.append(dot,label,value);box.querySelector('.position-allocation-legend').append(button);
-      const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.classList.add('allocation-slice');circle.dataset.allocationCode=item.code;Object.entries({cx:50,cy:50,r:40,fill:'none',stroke:color,'stroke-width':14,transform:'rotate(-90 50 50)',tabindex:0,role:'button','aria-label':name}).forEach(([k,v])=>circle.setAttribute(k,v));const svg=box.querySelector('svg');svg.insertBefore(circle,svg.lastElementChild);
-    });return box;
-  }
-  function updateAllocation(positions,complete,setPrivate,money){
-    const existing=document.querySelector('.position-allocation');
-    if(!complete||!document.querySelector('[data-position-code]')||existing?.dataset.allocationCash==='')return;
-    const cash=Number(existing?.dataset.allocationCash||0);
-    const items=(positions.updates||[]).filter(item=>Number(item.value)>0);
-    if(cash>0)items.push({code:'cash',value:cash});
-    const total=items.reduce((value,item)=>value+Number(item.value),0);
-    if(!total)return;
-    items.sort((a,b)=>b.value-a.value);
-    const box=ensureAllocation(items),svg=box.querySelector('svg');
-    const legend=box.querySelector('.position-allocation-legend'),circumference=2*Math.PI*40;
-    let offset=0;
-    items.forEach(item=>{
-      const button=legend.querySelector('[data-allocation-select="'+item.code+'"]');
-      const slice=svg.querySelector('[data-allocation-code="'+item.code+'"]');
-      const weight=Number(item.value)/total*100,arc=circumference*weight/100;
-      button.dataset.allocationWeight=weight;
-      button.dataset.allocationValue=item.value;
-      setPrivate(button.querySelector('b'),money(weight,1)+'%');
-      legend.append(button);
-      slice.setAttribute('stroke-dasharray',arc+' '+circumference);
-      slice.setAttribute('stroke-dashoffset',-offset);
-      svg.insertBefore(slice,svg.lastElementChild);
-      offset+=arc;
-    });
-    const selected=legend.querySelector('[aria-pressed=true]');
-    setPrivate(box.querySelector('[data-allocation-center-weight]'),selected?money(selected.dataset.allocationWeight,1)+'%':'100.0%');
-    setPrivate(box.querySelector('[data-allocation-center-value]'),money(selected?selected.dataset.allocationValue:total)+' 元');
-    box.querySelectorAll('.position-allocation-chart,[data-allocation-reset]').forEach(el=>{el.hidden=false;});
-    const pending=box.querySelector('.position-allocation-pending');
-    if(pending)pending.hidden=true;
-  }
   function applyValuations(data){
     const positions=data.positions||{},totals=positions.totals||{},complete=totals.complete===true;
     const money=(n,d=0)=>Number(n).toLocaleString('zh-TW',{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -432,7 +387,8 @@
         }
       }
     });
-    updateAllocation(positions,complete,setPrivate,money);
+    if(complete&&document.querySelector('[data-position-code]'))
+      window.StockBotAllocation?.redraw(positions.updates||[],names);
   }
   // Keep complete valuation snapshots intact while a new quote batch is incomplete.
   // A server-generated context prevents restoring valuations after position/settings changes.

@@ -84,14 +84,14 @@ def test_cash_is_sorted_with_stocks_and_report_displays_the_same_weight(compiled
     exec(compiled['_line_hidden_operation_report'], ns)
     positions = [{'code': '2330', 'shares': 1}, {'code': '2383', 'shares': 1}]
     prices = {'2330': {'close': 80}, '2383': {'close': 20}}
-    card = ns['_line_hidden_holdings_flex']('owner', positions, prices, cash_amount=100)
+    card = ns['_line_hidden_holdings_flex']('owner', positions, prices, cash_amount=50)
     allocation = card['contents']['body']['contents'][2]['contents']
     labels = [row['contents'][0]['contents'][:2] for row in allocation]
     assert [(name['text'], weight['text']) for name, weight in labels] == [
-        ('現金', '50.0%'), ('2330（2330）', '40.0%'), ('2383（2383）', '10.0%')]
-    report = ns['_line_hidden_operation_report']('owner', positions, prices, cash_amount=100)
+        ('2330（2330）', '53.3%'), ('現金', '33.3%'), ('2383（2383）', '13.3%')]
+    report = ns['_line_hidden_operation_report']('owner', positions, prices, cash_amount=50)
     cash = report['contents']['body']['contents'][1]['contents']
-    assert [column['text'] for column in cash] == ['現金', '50.0%']
+    assert [column['text'] for column in cash] == ['現金', '33.3%']
     report_pending = ns['_line_hidden_operation_report']('owner', positions, {}, cash_amount=100)
     assert report_pending['contents']['body']['contents'][1]['contents'][1]['text'] == '待確認'
 
