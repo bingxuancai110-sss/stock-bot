@@ -11,7 +11,7 @@ def compile_node(n,local=ns):
  # Strip Flask decorators: these are isolated renderers, no app/database import.
  if isinstance(n,ast.FunctionDef):n.decorator_list=[]
  exec(compile(ast.Module(body=[n],type_ignores=[]),'<actual-renderer>','exec'),local)
-for name in ['_hv2_scope','_hv2_bang','compute_twr','fmt_pct','render_page','render_trend_chart','render_leaderboard_chart','_hv2_group_html','_hv2_impact_card','_render_home_v2','render_workbench_body','web_more']:
+for name in ['_hv2_scope','_hv2_bang','compute_twr','fmt_pct','render_page','render_trend_chart','render_leaderboard_chart','_hv2_group_html','_hv2_impact_card','_render_home_v2','render_workbench_body','web_more','render_position_allocation']:
  n=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name);compile_node(n)
 for n in tree.body:
  if isinstance(n,ast.Assign):
@@ -29,6 +29,10 @@ for i in range(80):
  d=date(2026,7,15)+timedelta(days=i)
  if d.weekday()<5:pts.append(dict(date=d,value=10000+i*50,cost=10000,taiex=22000+i*15))
 local['position_trend_html']=ns['render_trend_chart'](pts)
+from types import SimpleNamespace
+ns['csrf_hidden_input'] = local['csrf_hidden_input']
+local.update(get_portfolio_cash=lambda uid: float(os.environ.get('STOCKBOT_FIXTURE_CASH', '0')), uid='fixture-user',
+             request=SimpleNamespace(method='GET', form={}))
 fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='web_positions')
 trade_result=next(n for n in fn.body if isinstance(n,ast.FunctionDef) and n.name=='trade_result_response')
 compile_node(trade_result,local)
