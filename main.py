@@ -27047,14 +27047,22 @@ def render_page(title, body, nav_active=None, user_name=None):
                 '<path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/>'
                 '</svg></a>'
             )
+    from notification_center import BELL, HEADER_CSS
+    notice_link = ""
+    if header_user and title != "登入台股 BOT":
+        notice_link = preserve_web_token(
+            f'<a class="app-notice-link" href="/web/notifications" aria-label="通知台" title="通知台">{BELL}</a>')
+        header_google_button = preserve_web_token(header_google_button)
+        page_extra_css += HEADER_CSS
     # 登入入口使用自己的編輯式 masthead，不輸出登入後的共用頁首／Google 綁定鈕。
     # 以 HTML 結構移除，比只靠 CSS 隱藏更可靠，也避免舊版樣式重新顯示。
     if title == "登入台股 BOT":
         header_html = ""
     else:
-        header_html = f'''<header class="app-header">
+        header_html = f'''<header class="app-header{' has-notice-center' if notice_link else ''}">
   {page_back}
   {header_google_button}
+  {notice_link}
   <div class="eyebrow">TAIWAN STOCK BOT</div>
   <h1>{title}</h1>
   <div class="dateline">{taiwan_now().strftime('%Y / %m / %d')}
@@ -28773,7 +28781,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261126-8">
-<script defer src="/static/short-term.js?v=20261126-9"></script>
+<script defer src="/static/short-term.js?v=20261127-1"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -29048,13 +29056,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     '/web/portfolio':'portfolio','/web/positions':'positions','/web/workbench':'screener',
     '/web/leaderboard':'leaderboard','/web/trades':'trades','/web/compare':'compare',
     '/web/settings':'settings','/web/more':'more','/web/chips':'screener','/web/etf':'more','/web/watchlist':'watchlist',
-    '/web/market':'market','/web/us-rotation':'us_rotation'
+    '/web/market':'market','/web/us-rotation':'us_rotation','/web/notifications':'notifications'
   }};
   var appTitles = {{
     '/web/portfolio':'今日','/web/positions':'持股','/web/workbench':'選股',
     '/web/leaderboard':'排行榜','/web/trades':'紀錄','/web/compare':'比較',
     '/web/settings':'設定','/web/more':'更多','/web/chips':'籌碼超人','/web/etf':'ETF 專區','/web/watchlist':'名單儀表板',
-    '/web/market':'看盤','/web/us-rotation':'美股輪動','/web/stock-analysis':'個股研究'
+    '/web/market':'看盤','/web/us-rotation':'美股輪動','/web/stock-analysis':'個股研究','/web/notifications':'通知台'
   }};
   // 賣出後走勢：定義在殼層而不是片段裡。
   // 片段內的腳本標籤在這個環境不會執行（實測過三版都沒用）。
@@ -32243,6 +32251,32 @@ def web_home(uid):
     token = request.args.get("t")
     suffix = f"?t={quote(token, safe='')}" if token else ""
     return redirect(f"/web/portfolio{suffix}")
+
+
+@app.route("/web/notifications")
+@web_login_required
+def web_notifications(uid):
+    from notification_center import CATEGORIES, read_events, render_center
+    category = request.args.get("kind", "short")
+    if category not in CATEGORIES:
+        category = "short"
+    conn = None
+    events, unavailable = [], False
+    try:
+        feature = "screener" if category == "short" else category
+        if is_admin(uid) or _admin_feature_enabled(feature):
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                events = read_events(cur, category, uid, taiwan_today())
+    except Exception as exc:
+        unavailable = True
+        print(f"通知台讀取失敗：{type(exc).__name__}", flush=True)
+    finally:
+        if conn is not None:
+            release_db_connection(conn)
+    response = make_response(respond_page("通知台", render_center(category, events, unavailable), None))
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @app.route("/web/premarket")
@@ -47646,17 +47680,48 @@ def compute_screener_rows(mode, inst=None, revenue=None, valuation=None,
                 persisted_meta["scan_finished_at"] = cache_item.get("scan_finished_at")
                 if persist_live and not persist:
                     persisted_mode = "radar_live"
+            prior_live = None
+            if persisted_mode == "radar_live":
+                try:
+                    prior_live = _load_recent_live_radar_snapshot(max_age_seconds=1800)
+                except Exception as exc:
+                    print(f"雷達通知基準讀取失敗：{type(exc).__name__}", flush=True)
             saved = _save_persisted_screener_snapshot(
                 persisted_mode, rows, skipped_liquidity, momentum,
                 source_date=source_date, source_meta=persisted_meta,
             )
             if saved is False:
                 raise RuntimeError("選股快照未確認保存，請稍後重試")
+            if prior_live and prior_live.get("rows"):
+                try:
+                    _archive_live_radar_changes(prior_live, rows)
+                except Exception as exc:
+                    print(f"雷達通知保存失敗：{type(exc).__name__}", flush=True)
         _screener_cache[mode] = cache_item
         return rows, skipped_liquidity, momentum
 
 
 _SCREENER_REFRESH_LOCK = threading.Lock()
+
+
+def _archive_live_radar_changes(previous, rows):
+    from notification_center import RADAR_PREFIX, save_events
+    now = taiwan_now()
+    before = previous.get("computed_at")
+    if not before:
+        return
+    local_before = before.replace(tzinfo=timezone.utc) if before.tzinfo is None else before
+    if local_before.astimezone(now.tzinfo).date() != now.date():
+        return
+    old = _normalise_pick_rows(previous["rows"][:50], "radar")
+    new = _normalise_pick_rows(rows[:50], "radar")
+    stamp = now.isoformat()
+    events = {
+        f"{stamp}|{item['event_key']}": dict(
+            title=item["title"], detail=f"盤中 {now:%H:%M} · {item['detail']}", observed_at=stamp)
+        for item in _radar_events(new, old)
+    }
+    save_events(lambda: _taiex_reduction_connect(connect_timeout=4), RADAR_PREFIX, now.date(), events)
 _SCREENER_REFRESH_RUNNING = {"blackhorse": False, "radar": False}
 _SCREENER_REFRESH_ERRORS = {}
 SCREENER_STALE_SNAPSHOT_MAX_AGE_SECONDS = 3 * 86400
@@ -55714,6 +55779,7 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
     return result
 
 
+from notification_center import save_short_events
 from short_term import ShortTermService, create_blueprint as create_short_term_blueprint
 _short_term_snapshot_store = _taiex_reduction_store(short_term=True)
 _short_term_service = ShortTermService(
@@ -55724,6 +55790,8 @@ _short_term_service = ShortTermService(
     market_quotes=_short_term_display_quotes,
     background_slot=_web_preload_lock,
     close_batch_lease=_short_term_snapshot_store,
+    save_alerts=lambda snapshot, today: save_short_events(
+        lambda: _taiex_reduction_connect(connect_timeout=4), snapshot, today),
     close_startup_grace=300,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,

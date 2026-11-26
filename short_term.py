@@ -310,6 +310,38 @@ def latest_alerts(rows, asof):
     return sorted(alerts,key=lambda a:(order.get(a['type'],4),a['code']))
 
 
+def momentum_candidate(bars, plan, position, direction, provisional, event):
+    """Compare the latest MACD turn to the replayed position without changing its state."""
+    if not position or provisional or event:
+        return None
+    closes = [bar['close'] for bar in bars[-120:]]
+    fast, slow = sum(closes[:12]) / 12, sum(closes[:26]) / 26
+    for close in closes[12:26]:
+        fast += (close - fast) * (2 / 13)
+    differences = [fast - slow]
+    for close in closes[26:]:
+        fast += (close - fast) * (2 / 13)
+        slow += (close - slow) * (2 / 27)
+        differences.append(fast - slow)
+    signal = sum(differences[:9]) / 9
+    histogram = [differences[8] - signal]
+    for difference in differences[9:]:
+        signal += (difference - signal) * .2
+        histogram.append(difference - signal)
+    sign = 1 if direction == 'long' else -1
+    a, b, c, d = (sign * bar for bar in histogram[-4:])
+    close = closes[-1]
+    if position.get('peak_r', 0) >= 1 and a < b > c > d and sign * (close - plan['ma10']) < 0 and not position['reduced']:
+        return dict(label='動能減碼觀察' if sign == 1 else '動能回補觀察',
+                    detail='浮盈曾達 1R，動能柱連兩日反向，收盤穿越 10 日線。觀察減少目前股數 50%。')
+    cost = position['cost'] if sign == 1 else position['proceeds']
+    if (position['added'] or position['reduced'] or not (a > b < c < d)
+            or sign * (close - plan['ma10']) <= 0 or sign * (close - cost / position['units']) <= 0):
+        return None
+    return dict(label='動能加碼觀察' if sign == 1 else '動能加空觀察',
+                detail='原部位有浮盈，動能柱連兩日順勢回轉，收盤位於 10 日線順勢側。次日以合併風險不超過 1R 為前提，觀察加初始股數 50%。')
+
+
 def normalize_bars(quote, now, include_current=False):
     """Reject broken OHLC, duplicates and unfinished current daily bars."""
     keys = ('close_dates', 'opens', 'highs', 'lows', 'closes', 'volumes')
@@ -612,6 +644,7 @@ def analyse(code, name, quote, history, now, intraday=False):
                 emit('exit',b['close'],'趨勢反轉確認：連續兩日收盤跌破事前趨勢支撐與20日線，且20日線不再上升',p['stop'],p['target'],p['units'])
                 trails.append(dict(date=b['date'],value=round(p['stop'],2),support=round(p['soft_support'],2)))
                 position=None;continue
+            p['peak_r'] = max(p.get('peak_r', 0), (b['close'] - p['entry']) / p['risk'])
             upper = b['high']-max(b['open'],b['close'])
             rejection = (b['high'] >= p['target'] and
                          (b['close'] < b['open'] or upper > .45*(b['high']-b['low'])))
@@ -696,6 +729,7 @@ def analyse(code, name, quote, history, now, intraday=False):
                 strategy=position['strategy'] if position else latest['strategy'],
                 patterns=list(dict.fromkeys(latest['patterns']+([position['strategy']] if position else []))),
                 pattern_line=latest['pattern_line'], dashboard_setup=dashboard_setup(bars, latest, provisional),
+                momentum_candidate=momentum_candidate(bars, latest, position, 'long', provisional, event),
                 signal_stage='entry' if event and event['type']=='entry' else 'triggered' if latest['trigger'] else 'watch',
                 watch_date=max((watch_dates.get(k) or '' for k in latest['patterns']),default='') or None,
                 trigger_date=trigger_dates.get(latest['strategy']),
@@ -831,7 +865,7 @@ class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
                  market_quotes=None, background_slot=None, close_batch_lease=None,
-                 close_startup_grace=0):
+                 close_startup_grace=0, save_alerts=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
@@ -840,6 +874,7 @@ class ShortTermService:
         self.market_quotes = market_quotes
         self.background_slot = background_slot
         self.close_batch_lease = close_batch_lease
+        self.save_alerts = save_alerts
         self.dashboard_snapshot = None
         self.dashboard_legacy = {}
         self.close_not_before = time.monotonic() + close_startup_grace if close_startup_grace else 0
@@ -1352,6 +1387,11 @@ class ShortTermService:
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
             with self.lock:self.cached=payload;self.error=''
+            if self.save_alerts:
+                try:
+                    self.save_alerts(payload, self.now().date())
+                except Exception as exc:
+                    print('短線通知保存失敗：' + type(exc).__name__, flush=True)
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
             continue_close = bool(not intraday and not complete and not memory_deferred and
                                   self.in_retry_window(session))
@@ -1596,6 +1636,8 @@ class ShortTermService:
                     fields = ('code', 'name', 'date', 'price', 'change_pct', 'display_quote', 'position_group',
                               'current_action', 'latest_event', 'provisional', 'signal_stage')
                     card = {field: row.get(field) for field in fields}
+                    if row.get('current_action') != 'unconfirmed':
+                        card['momentum_candidate'] = row.get('momentum_candidate')
                     card.update(trade=opened if position_group(row) == 'held' else
                                 last if position_group(row) == 'closed' else None)
                     card['dashboard_signal'] = dashboard_signal(row, direction)

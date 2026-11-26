@@ -85,7 +85,7 @@ def setup(bars, fraction=1):
 
 
 def analyse(code,name,quote,history,now,intraday=False):
-    from short_term import normalize_bars,chip_at,day,dashboard_setup
+    from short_term import normalize_bars,chip_at,day,dashboard_setup,momentum_candidate
     from technical_space import short_space
     bars=normalize_bars(quote,now,include_current=intraday)
     if len(bars)<65 or (now.date()-date.fromisoformat(bars[-1]['date'])).days>7:return None
@@ -107,6 +107,7 @@ def analyse(code,name,quote,history,now,intraday=False):
             p['breaks']=p['breaks']+1 if broken else 0
             if p['breaks']>=2 and plan['ma20']>=plan['ma20_previous']:
                 emit('exit',c,'連續兩日站回事前趨勢壓力與20日線，20日線轉平或上升；反轉確認，全部回補',p['units']);p=None;continue
+            p['peak_r'] = max(p.get('peak_r', 0), (p['entry'] - c) / p['risk'])
             bounced=b['low']<=p['target'] and (c>b['open'] or min(c,b['open'])-b['low']>.45*(b['high']-b['low']))
             if not p['reduced'] and ((bounced and c>plan['ma10']) or (c>plan['ma20'] and prefix[-2]['close']>plan['ma20_previous'])):
                 units=p['units']/2;emit('reduce',c,'支撐反彈並站回10日線，或連兩日站回20日線；回補當時空單50%',units);p['units']-=units;p['proceeds']*=.5;p['reduced']=True
@@ -144,6 +145,7 @@ def analyse(code,name,quote,history,now,intraday=False):
                 entry_ready=bool(event and action=='entry'),latest_event=event['type'] if event else None,latest_event_date=event['date'] if event else None,last_entry_date=entries[-1]['date'] if entries else None,last_exit_date=exits[-1]['date'] if exits else None,
                 signal_stage='entry' if event and action=='entry' else 'triggered' if latest['trigger'] else 'watch',strategy=p['strategy'] if p else latest['strategy'],patterns=[p['strategy']] if p else latest.get('watching',[latest['strategy']]),pattern_line=latest['pattern_line'],
                 dashboard_setup=dashboard_setup(bars, latest, provisional),
+                momentum_candidate=momentum_candidate(bars, latest, p, 'short', provisional, event),
                 entry=round(p['entry'] if p else bars[-1]['close'],2),stop=round(p['stop'] if p else latest['stop'],2),target=round(p['target'] if p else latest['target'],2),target_kind=p.get('target_kind','回補參考') if p else latest.get('target_kind','支撐／2R回補參考'),space=latest.get('space'),family_checks=latest.get('family_checks',[]),soft_support=round(p['soft_resistance'] if p else latest['soft_resistance'],2),support=round(latest['support'],2),resistance=latest['resistance'],rr=round(latest['rr'],2),
                 pending=[] if p else pending,checks=[dict(label='追空／波動風險',passed=not latest['hot']),dict(label='空方型態',passed=latest['trigger']),dict(label='結構風險',passed=latest['risk_ok'])],technical_priority=(not latest['trend_slope']<0,latest['trend_slope'],0),trend=latest.get('downtrend',latest['trend_slope']<0),
                 volume_ratio=round(latest['volume_ratio'],2),avg_volume=latest['avg_volume'],avg_turnover=latest['avg_turnover'],chip=chip,chip_ratio=None,institutional_buying=False,institutional_selling=chip['available'] and chip['foreign']+chip['trust']<0,liquidity_warning=latest['avg_turnover']<10_000_000,

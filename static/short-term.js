@@ -142,7 +142,7 @@
   root.querySelector('.st-rules div').textContent=(short?
    '放空型態分開檢查：上升線跌破、20日支撐跌破、10日或20日線反彈轉弱、弱勢整理再破低。明確跌破可用單日收盤超過0.5ATR且量比至少1.2確認；一般跌破用連續兩個有成交的日K確認。波段趨勢型態以結構停損追蹤，第一道支撐是回補觀察點，不是固定行情終點；初期轉折仍須1.5R空間。加空須已有1R獲利、再破低且初始風險預算受控，最多加首次股數50%；轉強回補當時空單50%，反轉或硬停損回補全部。':
    '進場型態分開檢查：底部／下降線轉折、突破、回測轉強、強勢整理延續。突破可用放量收盤，或連兩個有成交的日K站穩同一壓力與20日線；回測須收復前日高點。轉折初期須1.5R空間；已確認的波段趨勢以結構停損追蹤，第一道壓力是減碼觀察點，不是固定行情終點。多方修復僅觀察，不能單獨產生買點。加碼及減碼沿用首次股數50%、當時部位50%與初始風險預算限制。')+
-   ' 不設股價上限、不以成交張數或法人買賣超作門檻。ATR是波動資料，不單獨禁止交易；結構停損距離仍須在ATR計算的6%至12%上限內。單日漲跌逾9.5%不新增部位，等待下一交易日重新確認可交易性。只讀取當時已完成資料；盤中訊號為暫定。零成交日K不計入確認與均線。訊號及價差是規則重播，非券商成交或含費績效；放空資格與券源未核實。不會下單。';
+   ' 不設股價上限、不以成交張數或法人買賣超作門檻。ATR是波動資料，不單獨禁止交易；結構停損距離仍須在ATR計算的6%至12%上限內。單日漲跌逾9.5%不新增部位，等待下一交易日重新確認可交易性。動能柱轉折於收盤後列為加減碼觀察。盤中訊號為暫定，零成交日K不計入確認與均線。價差為策略重播，未扣交易成本。';
   root.querySelector('.st-desk-filters').ontoggle=function(e){s.filtersOpen=e.target.open;};
   root.querySelector('.st-shape-filter').onchange=function(e){s.shape=e.target.value;s.position='';s.offset=0;unmountDetail(s);s.viewChanged=true;if(s.loading)s.pending=true;else load(s,false);};
   function priceChoice(e,key){s[key]=e.target.value;s.offset=0;unmountDetail(s);s.viewChanged=true;try{localStorage.setItem('st-price-view',JSON.stringify({priceRange:s.priceRange,sort:s.sort}));}catch(ignore){}if(s.loading)s.pending=true;else load(s,false);}
@@ -226,7 +226,8 @@
      '<th scope="row"><button type="button" class="st-desk-open" aria-expanded="'+(s.open===r.code)+'" aria-controls="st-detail-'+esc(r.code)+'"><b>'+
      esc(r.code)+'</b><span title="'+esc(r.name)+'">'+esc(r.name)+'</span>'+(bias?'<small class="st-bias" data-bias="'+esc(signal.bias)+'">'+esc(bias)+'</small>':'')+'</button></th>'+
      '<td><span class="st-desk-state" data-state="'+esc(g)+'">'+esc(status)+'</span>'+
-     (phase&&signal.stage!=='stale'?'<small class="st-phase" data-phase="'+esc(signal.stage)+'">'+esc(phase)+'</small>':'')+'</td>'+
+     (phase&&signal.stage!=='stale'?'<small class="st-phase" data-phase="'+esc(signal.stage)+'">'+esc(phase)+'</small>':'')+
+     (g!=='unknown'&&r.momentum_candidate?'<small class="st-phase">'+esc(r.momentum_candidate.label)+'</small>':'')+'</td>'+
      '<td><b>'+price(q.price!=null?q.price:r.price)+'</b>'+(distance?'<small class="st-distance" title="以策略資料日價格計算">'+esc(distance)+'</small>':q.date||r.date?'<small>'+esc((q.date||r.date).slice(5).replace('-','/'))+'</small>':'')+'</td>'+
      '<td>'+price(trade.entry_price)+'</td><td>'+price(trade.exit_price)+'</td>'+
      '<td class="st-desk-spread '+spreadClass(v)+'"><b>'+(v==null?'—':(v>0?'+':v<0?'−':'')+price(Math.abs(v)))+'</b>'+
@@ -329,10 +330,12 @@
   var basis=info.basis_price!=null?' · 策略價 '+price(info.basis_price):'';
   var distance=info.distance_pct!=null&&info.distance_pct>=0?' · 距參考價 '+num(info.distance_pct)+'%':'';
   var reason=info.reason&&info.reason.split('；')[0];
+  var momentum=info.stage!=='stale'&&r.momentum_candidate;
   return '<section class="st-signal-context" aria-label="訊號階段"><div><strong data-phase="'+esc(info.stage)+'">'+esc(stage)+'</strong>'+
    (action?'<b>'+esc(action)+' '+price(info.price)+'</b>':biasLabels[info.bias]?'<b>'+esc(biasLabels[info.bias])+'</b>':'')+
    (stamp?'<time>'+esc(stamp)+'</time>':'')+'</div>'+
-   (level?'<p>'+esc(level+distance+basis)+'</p>':'')+(reason?'<p>'+esc(reason)+'</p>':'')+'</section>';
+   (level?'<p>'+esc(level+distance+basis)+'</p>':'')+(reason?'<p>'+esc(reason)+'</p>':'')+
+   (momentum?'<p><b>'+esc(momentum.label)+'</b> · '+esc(momentum.detail)+'</p>':'')+'</section>';
  }
  function timeline(r){
   var events=(r.signals||[]).slice().reverse();
