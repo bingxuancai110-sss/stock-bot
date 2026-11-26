@@ -46,6 +46,8 @@ from datetime import datetime, timedelta, timezone, date
 from concurrent.futures import ThreadPoolExecutor
 
 TW_TZ = timezone(timedelta(hours=8))
+SHORT_TERM_WORKER_PROCESS = os.environ.get("STOCKBOT_PROCESS") == "short-term-worker"
+SHORT_TERM_EXTERNAL_WORKER = os.environ.get("SHORT_TERM_EXTERNAL_WORKER") == "1" and not SHORT_TERM_WORKER_PROCESS
 APP_BUILD = "V292_HOME_LIGHT"
 UI_BUILD = "v2-template-refactor"
 # V262: separate official live quotes from slow-moving history, avoid MIS round-trips while
@@ -1671,8 +1673,8 @@ def _disable_web_page_cache(response):
     return response
 
 
-line_bot_api = LineBotApi(os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
-handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
+line_bot_api = LineBotApi("" if SHORT_TERM_WORKER_PROCESS else os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
+handler = WebhookHandler("" if SHORT_TERM_WORKER_PROCESS else os.environ.get("LINE_CHANNEL_SECRET"))
 
 # --- 繁體中文名稱對照表（僅作為個股直接查詢時的備用名稱） ---
 STOCK_NAME_MAP = {
@@ -2800,7 +2802,8 @@ def init_db():
     finally:
         release_db_connection(conn)
 
-init_db()
+if not SHORT_TERM_WORKER_PROCESS:
+    init_db()
 
 
 WEB_UI_THEMES = {
@@ -28773,7 +28776,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261124-2">
-<script defer src="/static/short-term.js?v=20261125-3"></script>
+<script defer src="/static/short-term.js?v=20261126-4"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
@@ -48036,11 +48039,15 @@ def cron_short_term_live():
         return jsonify(ok=True, state="outside_session", note="目前非盤中或收盤更新時段，保留最近結果")
     if request.method == "POST":
         service.trigger = "獨立盤中排程" if intraday else "獨立收盤排程"
-    result = service.payload(schedule=request.method == "POST")
+    external_worker = getattr(service, "external_worker", False) is True
+    if external_worker:
+        result = service.payload(limit=1)
+    else:
+        result = service.payload(schedule=request.method == "POST")
     meta = result["meta"]
     building = bool(meta.get("building"))
     complete = bool(meta.get("scan_complete") and meta.get("signals_current"))
-    state = "queued" if building else "fresh" if complete else "deferred"
+    state = "queued" if building else "fresh" if complete else "external_worker" if external_worker else "deferred"
     scope = meta.get("scope") or {}
     progress = meta.get("progress", 0) if building else meta.get("scanned", 0)
     total = scope.get("deep_total") or meta.get("progress_total", 0)
@@ -48054,7 +48061,9 @@ def cron_short_term_live():
                    generated_at=meta.get("generated_at"), direction_counts=meta.get("direction_counts", {}),
                    confirmed=meta.get("total", 0)-counts.get("unknown", 0),
                    pending=counts.get("unknown", 0), failed=meta.get("failed", 0),
-                   note=meta.get("error") or ("已確認保存全市場掃描結果" if complete else "背景接續中；排隊不代表掃描完成")), (202 if building else 200)
+                   note=meta.get("error") or ("已確認保存全市場掃描結果" if complete else
+                                             "讀取獨立掃描服務最後保存的進度" if external_worker else
+                                             "背景接續中；排隊不代表掃描完成")), (202 if building else 200)
 
 
 @app.route("/cron/radar-live", methods=["POST", "GET"])
@@ -48067,7 +48076,7 @@ def cron_radar_live():
     if not _is_taiwan_intraday_window():
         return "目前非台股一般盤中時段，未啟動盤中雷達快照。", 200
     short_term_service = globals().get("_short_term_service")
-    if short_term_service and short_term_service.intraday():
+    if short_term_service and getattr(short_term_service, "external_worker", False) is not True and short_term_service.intraday():
         run_in_background("短線盤中更新檢查", lambda: short_term_service.payload(schedule=True, quote_only=True))
     if not _background_work_memory_safe(reserve_mb=RADAR_LIGHT_SCAN_RESERVE_MB):
         with _SCREENER_REFRESH_LOCK:
@@ -48458,7 +48467,8 @@ configure_daily_change_detector(
     get_all_watchlist_user_ids=get_all_watchlist_user_ids,
     stock_display_name=stock_display_name,
 )
-init_premarket_change_tables()
+if not SHORT_TERM_WORKER_PROCESS:
+    init_premarket_change_tables()
 
 
 def build_review_body():
@@ -55722,9 +55732,11 @@ _short_term_service = ShortTermService(
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
     market_quotes=_short_term_display_quotes,
-    background_slot=_web_preload_lock,
+    background_slot=None if SHORT_TERM_WORKER_PROCESS else _web_preload_lock,
     close_batch_lease=_short_term_snapshot_store,
-    close_startup_grace=300,
+    close_startup_grace=0 if SHORT_TERM_WORKER_PROCESS else 300,
+    external_worker=SHORT_TERM_EXTERNAL_WORKER,
+    scan_interval=10 if SHORT_TERM_WORKER_PROCESS else 60,
     light=lambda codes, markets: _fetch_yahoo_spark_bulk(
         codes, rng="3mo", force_refresh=True, market_map=markets,
         include_history=True, cache_result=False, workers=2),
@@ -55929,12 +55941,14 @@ def _apply_fugle_browser_quotes(uid, raw, market_raw=None, background=False):
 
 
 from fugle_background import start_server_service
-_fugle_background_service = start_server_service(
-    get_positions=get_positions, merge_positions=merge_positions,
-    get_connection=get_db_connection, release_connection=release_db_connection,
-    load_snapshot=_load_shared_data_snapshot, save_snapshot=_save_shared_data_snapshot,
-    now=taiwan_now,
-)
+_fugle_background_service = None
+if not SHORT_TERM_WORKER_PROCESS:
+    _fugle_background_service = start_server_service(
+        get_positions=get_positions, merge_positions=merge_positions,
+        get_connection=get_db_connection, release_connection=release_db_connection,
+        load_snapshot=_load_shared_data_snapshot, save_snapshot=_save_shared_data_snapshot,
+        now=taiwan_now,
+    )
 
 from quote_lab import create_blueprint as create_quote_lab_blueprint
 app.register_blueprint(create_quote_lab_blueprint(
@@ -55981,15 +55995,16 @@ def _bootstrap_tw_research(attempt=0):
             retry.start()
 
 
-_tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)
-_tw_research_bootstrap_timer.daemon = True
-_tw_research_bootstrap_timer.start()
+if not SHORT_TERM_WORKER_PROCESS:
+    _tw_research_bootstrap_timer = threading.Timer(20, _bootstrap_tw_research)
+    _tw_research_bootstrap_timer.daemon = True
+    _tw_research_bootstrap_timer.start()
 
-if os.environ.get("DATABASE_URL"):
-    _schedule_daily_snapshot_recovery()
-    _market_monitor_timer = threading.Timer(60, _market_monitor_tick)
-    _market_monitor_timer.daemon = True
-    _market_monitor_timer.start()
+    if os.environ.get("DATABASE_URL"):
+        _schedule_daily_snapshot_recovery()
+        _market_monitor_timer = threading.Timer(60, _market_monitor_tick)
+        _market_monitor_timer.daemon = True
+        _market_monitor_timer.start()
 
 
 if __name__ == "__main__":

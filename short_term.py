@@ -753,7 +753,7 @@ class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
                  market_quotes=None, background_slot=None, close_batch_lease=None,
-                 close_startup_grace=0):
+                 close_startup_grace=0, external_worker=False, scan_interval=60):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
@@ -762,6 +762,10 @@ class ShortTermService:
         self.market_quotes = market_quotes
         self.background_slot = background_slot
         self.close_batch_lease = close_batch_lease
+        self.external_worker = external_worker
+        self.scan_interval = scan_interval
+        self.snapshot_revision = None
+        self.next_snapshot_check = 0.0
         self.close_not_before = time.monotonic() + close_startup_grace if close_startup_grace else 0
         self.card_quotes = {}
         self.card_quote_session = None
@@ -888,7 +892,7 @@ class ShortTermService:
             if self.card_quote_session == (day(now), True):
                 quote_at = max(filter(None, (live_quote_timestamp(q, now) for q in self.card_quotes.values())), default=None)
             stale = []
-            if quote_at is None:
+            if quote_at is None and not self.external_worker:
                 stale.append('card_quotes')
             if not -60 <= scan_age <= INTRADAY_STALE_SECONDS:
                 stale.append('saved_scan')
@@ -1024,7 +1028,7 @@ class ShortTermService:
         memory_deferred = False
         intraday = self.intraday()
         session = (day(self.now()), intraday)
-        lease_key = KEY + ':close-attempt'
+        lease_key = KEY + (':intraday-attempt' if intraday else ':close-attempt')
         claimed_at = None
         if self.background_slot and not self.background_slot.acquire(blocking=False):
             with self.lock:
@@ -1038,13 +1042,14 @@ class ShortTermService:
             reserve = self.scan_reserve(intraday, closing_batch=not intraday)
             if not self.safe(reserve_mb=reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，已保留掃描進度')
-            if not intraday and self.close_batch_lease:
+            if self.close_batch_lease:
                 claimed_at = self.close_batch_lease.claim_close_batch(lease_key)
                 if not claimed_at:
                     with self.lock:self.error='上次掃描中斷，暫停續掃並保留快照'
-                    print('短線收盤暫緩：上次掃描中斷，等候重試', flush=True)
+                    print('短線掃描暫緩：已有批次租約，等候重試', flush=True)
                     return
-                print('短線收盤開始分批詳查', flush=True)
+                if not intraday:
+                    print('短線收盤開始分批詳查', flush=True)
             with self.lock:previous=self.cached or {}
             saved=previous.get('cycle') or {}
             resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
@@ -1201,7 +1206,7 @@ class ShortTermService:
             # pressure spike here must leave the last persisted cursor usable.
             if not self.safe(reserve_mb=reserve):
                 raise ScanMemoryDeferred('記憶體餘裕不足，下次從已保存的進度繼續')
-            if claimed_at:
+            if claimed_at and not intraday:
                 print('短線收盤準備保存：%s/%s' % (len(covered), len(queue)), flush=True)
             if not self.store.save(snapshot_key,payload,data_date=asof,source_meta={'version':VERSION,'intraday':intraday}):
                 raise RuntimeError('研究結果未確認保存，保留原結果與進度')
@@ -1241,23 +1246,37 @@ class ShortTermService:
     def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False):
         with self.lock:
             intraday=self.intraday()
+            snapshot_key = KEY + (':intraday' if intraday else '')
+            max_age = 30 * 86400
+            reload_snapshot = not self.loaded or (self.cache_mode is not None and self.cache_mode != intraday and not self.running)
+            if self.external_worker and not reload_snapshot and (refresh or time.monotonic() >= self.next_snapshot_check):
+                self.next_snapshot_check = time.monotonic() + 30
+                try:
+                    revision = self.store.revision(snapshot_key, max_age)
+                    if intraday and revision is None:
+                        revision = self.store.revision(KEY, max_age)
+                    reload_snapshot = revision is not None and revision != self.snapshot_revision
+                except Exception as exc:
+                    print('短線快照版本暫時無法確認：' + type(exc).__name__, flush=True)
             close_starting = not intraday and self.close_not_before and time.monotonic() < self.close_not_before
-            if close_starting and quote_only:
+            if close_starting and quote_only and not self.external_worker:
                 return
-            if quote_only and not self.loaded and not self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
+            if quote_only and not self.external_worker and not self.loaded and not self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
                 self.defer_for_memory((day(self.now()), intraday))
                 return
-            if not self.loaded or (self.cache_mode is not None and self.cache_mode!=intraday and not self.running):
+            if reload_snapshot:
                 loaded_at = time.perf_counter()
-                saved=self.store.load(KEY+(':intraday' if intraday else ''),max_age_seconds=30*86400)
+                saved=self.store.load(snapshot_key,max_age_seconds=max_age)
                 if intraday and not saved:
-                    saved = self.store.load(KEY, max_age_seconds=30*86400)
+                    saved = self.store.load(KEY, max_age_seconds=max_age)
                 cached = saved.get('payload') if saved else None
                 if cached:
                     for group in ('rows', 'all_rows', 'short_rows'):
                         for row in cached.get(group, []):
                             compact_chart(row)
                 self.cached = cached
+                self.snapshot_revision = saved.get('computed_at') if saved else None
+                self.next_snapshot_check = time.monotonic() + 30
                 self.loaded=True;self.cache_mode=intraday
                 if cached:
                     print('短線快照載入：%s，已詳查 %s 檔，%.2f 秒' %
@@ -1274,7 +1293,7 @@ class ShortTermService:
                 if self.calendar(expected):break
                 expected-=timedelta(days=1)
             quote_session = (day(expected), intraday)
-            if cached and not quote_only and expected == self.now().date() and (intraday or self.now().hour >= 14):
+            if cached and not self.external_worker and not quote_only and expected == self.now().date() and (intraday or self.now().hour >= 14):
                 self.queue_card_quotes(cached, quote_session)
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
@@ -1284,7 +1303,9 @@ class ShortTermService:
             unfinished=cycle.get('day')==day(self.now()) and cycle.get('cursor',0)<len(cycle.get('queue',[]))
             scan_session = (day(self.now()), intraday)
             retry_pending = self.memory_retry_session == scan_session and self.memory_retry_at
-            if (refresh or schedule and (not cached or stale or unfinished)) and not close_starting and not retry_pending and not self.running and time.monotonic()-self.last_try>60:
+            if (not self.external_worker and (refresh or schedule and (not cached or stale or unfinished))
+                    and not close_starting and not retry_pending and not self.running
+                    and time.monotonic()-self.last_try > self.scan_interval):
                 self.last_try=time.monotonic()
                 if self.safe(reserve_mb=self.scan_reserve(intraday, closing_batch=not intraday)):
                     self.running=True; self.progress=0; self.error=''; self.started=time.monotonic()
@@ -1415,7 +1436,7 @@ class ShortTermService:
                 version=VERSION,building=self.running,progress=self.progress,pool_limit=MAX_POOL,
                 phase=self.phase,progress_total=self.progress_total,
                 scope=dict(self.scan_meta) if self.running else (cached or {}).get('scope',{}),
-                signals_current=signals_current,expected_date=day(expected),
+                signals_current=signals_current,expected_date=day(expected),external_worker=self.external_worker,
                 scan_complete=bool(cycle and not unfinished and cycle.get('cursor',0)>=len(cycle.get('queue',[]))),
                 date=(cached or {}).get('date'),generated_at=generated,stale=stale,
                 scanned=(cached or {}).get('scanned',0),failed=(cached or {}).get('failed',0),

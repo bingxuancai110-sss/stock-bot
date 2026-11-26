@@ -122,7 +122,14 @@
   if(v==null)return '';
   return '<div class="st-profit st-compact-profit"><span>'+(g==='held'?'未實現每股價差':'上次每股價差')+'</span><strong class="'+spreadClass(v)+'">'+spreadText(v)+'</strong></div>';
  }
- function statusText(m){return m.building?(m.phase||'更新中')+' '+(m.progress||0)+'／'+(m.progress_total||80):m.error?m.error:(m.intraday?'盤中':'收盤')+' · '+(m.date||'資料待確認')+' · '+(m.generated_at?m.generated_at.slice(11,16)+' 更新':'等待更新');}
+ function statusText(m){
+  if(m.external_worker){
+   var scope=m.scope||{},total=scope.deep_total||0;
+   return (m.date||'資料待確認')+' · '+(total?'已詳查 '+num(m.scanned||0)+'／'+num(total)+' 檔':'等待掃描結果')+
+    (m.generated_at?' · '+m.generated_at.slice(11,16)+' 儲存':'');
+  }
+  return m.building?(m.phase||'更新中')+' '+(m.progress||0)+'／'+(m.progress_total||80):m.error?m.error:(m.intraday?'盤中':'收盤')+' · '+(m.date||'資料待確認')+' · '+(m.generated_at?m.generated_at.slice(11,16)+' 更新':'等待更新');
+ }
  function header(s,target){
   var root=target||s.el,short=s.direction==='short';
   names=short?{entry:'放空',add:'加空',reduce:'回補一半',exit:'全部回補'}:{entry:'進場',add:'加碼',reduce:'減碼',exit:'出場'};
@@ -130,7 +137,7 @@
   var m=s.data.meta||{},scope=Object.assign({},m.scope||{}),counts=m.position_counts||{},rows=s.data.rows||[];
   if(short){scope.qualified_sectors=scope.short_qualified_sectors||{};var priceCoverage={};Object.keys(scope.price_coverage||{}).forEach(function(k){priceCoverage[k]=Object.assign({},scope.price_coverage[k],{qualified:scope.price_coverage[k].short_qualified||0});});scope.price_coverage=priceCoverage;}
   if(!m.position_counts)Object.keys(groupNames).forEach(function(g){counts[g]=rows.filter(function(r){return group(r)===g;}).length;});
-  root.innerHTML='<header class="st-heading"><h2>波段機會</h2><button type="button" class="st-refresh">更新</button></header>'+
+  root.innerHTML='<header class="st-heading"><h2>波段機會</h2><button type="button" class="st-refresh">'+(m.external_worker?'讀取進度':'更新')+'</button></header>'+
    '<div class="st-status" role="status">'+esc(statusText(m))+'</div>'+
    '<div class="st-direction" aria-label="策略方向">'+['long','short'].map(function(d){return '<button type="button" data-direction="'+d+'" aria-pressed="'+((s.direction||'long')===d)+'">'+(d==='short'?'放空機會':'做多機會')+'</button>';}).join('')+'</div>'+notices(s)+'<div class="st-sector" aria-label="短線產業篩選">'+['全部','電子','非電子'].map(function(v){return '<button type="button" data-sector="'+v+'" aria-pressed="'+((s.sector||'全部')===v)+'">'+v+'</button>';}).join('')+'<select class="st-shape-filter" aria-label="型態">'+(short?['','reversal','breakout','pullback','continuation']:['','reversal','breakout','pullback','continuation','repair']).map(function(k){return '<option value="'+k+'" '+((s.shape||'')===k?'selected':'')+'>'+(strategyNames[k]||'全部型態')+'</option>';}).join('')+'</select></div>'+
    '<div class="st-price-tools"><label>股價區間<select class="st-price-filter" aria-label="股價區間">'+[['all','全部股價'],['under100','低於100元'],['100to500','100至未滿500元'],['500to1000','500至未滿1000元'],['1000plus','1000元以上']].map(function(x){return '<option value="'+x[0]+'" '+((s.priceRange||'all')===x[0]?'selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></label><label>排序<select class="st-price-sort" aria-label="排序">'+[['signal','訊號優先'],['price_desc','股價由高到低'],['price_asc','股價由低到高']].map(function(x){return '<option value="'+x[0]+'" '+((s.sort||'signal')===x[0]?'selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></label></div>'+'<div class="st-state-tabs" aria-label="進出場狀態">'+['','held','waiting','closed'].concat(counts.unknown?['unknown']:[]).map(function(g){return '<button type="button" data-position="'+g+'" aria-pressed="'+((s.position||'')===g)+'">'+(g?groupNames[g]:'全部')+(g?' <b>'+num(counts[g]||0)+'</b>':'')+'</button>';}).join('')+'</div><div class="st-list-summary">共 '+num(m.total==null?rows.length:m.total)+' 檔 · '+(s.sort==='price_desc'?'股價由高到低':s.sort==='price_asc'?'股價由低到高':'訊號優先')+'</div><div class="st-cards"></div><nav class="st-pagination" aria-label="候選分頁"><button type="button" data-page="-1" '+((m.offset||0)<=0?'disabled':'')+'>上一頁</button><span>第 '+(Math.floor((m.offset||0)/(m.limit||20))+1)+'／'+Math.max(1,Math.ceil((m.total||rows.length)/(m.limit||20)))+' 頁</span><button type="button" data-page="1" '+(!m.has_more?'disabled':'')+'>下一頁</button></nav>'+
@@ -305,7 +312,7 @@
    .finally(function(){
     clearTimeout(timeout);s.loading=false;
     if(s.pending&&alive(s)){s.pending=false;var force=s.pendingForce;s.pendingForce=false;load(s,force);return;}
-    if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}
+    if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent=s.data.meta?.external_worker?'讀取進度':'更新';}}
    });
  }
  window.StockBotShortTerm={mount:function(el){

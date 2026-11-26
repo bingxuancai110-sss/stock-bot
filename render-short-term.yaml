@@ -1,0 +1,21 @@
+services:
+  - type: worker
+    name: stock-bot-short-term
+    runtime: python
+    region: ohio
+    plan: 0.5c-512mb
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -u short_term_worker.py
+    maxShutdownDelaySeconds: 150
+    envVars:
+      - key: DATABASE_URL
+        fromService:
+          name: stock-bot
+          type: web
+          envVarKey: DATABASE_URL
+      - key: SHORT_TERM_WORKER_ENABLED
+        value: "0"
+      - key: DB_POOL_MIN
+        value: "1"
+      - key: DB_POOL_MAX
+        value: "3"

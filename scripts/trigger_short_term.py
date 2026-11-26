@@ -42,6 +42,8 @@ def main():
                 if monitor['state'] in {'stalled', 'unavailable'}:
                     raise RuntimeError('正式站資料更新停滯或無法驗證；請查看上述資料日期和最後成功時間')
                 return
+            if result.get('state') == 'external_worker' and result.get('ok'):
+                return
             if not result.get('ok') or result.get('state') not in {'queued','fresh','outside_session'}:
                 raise RuntimeError('伺服器未接收背景研究工作，稍後排程將重試')
             return
