@@ -94,6 +94,22 @@ class ShortTermSnapshotStore(SnapshotStore):
     """Write small DB checkpoints and keep the legacy key readable for rollback."""
     suffix = ':compressed-v1'
 
+    def revision(self, key, max_age_seconds):
+        """Check the preferred checkpoint without reading or decoding its payload."""
+        conn = self.connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout=4000")
+                cur.execute("""SELECT computed_at FROM shared_data_snapshots
+                    WHERE snapshot_key IN (%s, %s)
+                      AND computed_at >= NOW() - (%s * INTERVAL '1 second')
+                    ORDER BY (snapshot_key = %s) DESC LIMIT 1""",
+                    (key + self.suffix, key, max_age_seconds, key + self.suffix))
+                row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            self.release(conn)
+
     def claim_close_batch(self, key):
         conn = self.connect()
         try:
