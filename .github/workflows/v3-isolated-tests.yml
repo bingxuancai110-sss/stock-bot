@@ -29,8 +29,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: python -m pip install Flask==3.0.3 requests psycopg2-binary
+      - run: python -m pip install -r requirements-v3-staging.txt requests psycopg2-binary
       - name: Require dependencies and run all V3 tests
         run: |
-          python -c "import flask, psycopg2"
-          python -m unittest -v test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool test_v3_fund test_v3_execution test_v3_management test_v3_release test_v3_staging
+          python -c "import flask, psycopg2, gunicorn"
+          python - <<'PY'
+          import os
+          import unittest
+          modules = "test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool test_v3_fund test_v3_execution test_v3_management test_v3_release test_v3_staging".split()
+          suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          skipped = len(result.skipped)
+          total = result.testsRun
+          ok = result.wasSuccessful() and skipped == 0 and total >= 150
+          report = (f"## V3 strict regression\n\n"
+                    f"- Commit: {os.environ.get('GITHUB_SHA','local')}\n"
+                    f"- Tests run: {total}\n"
+                    f"- Failures: {len(result.failures)}\n"
+                    f"- Errors: {len(result.errors)}\n"
+                    f"- Skipped: {skipped}\n"
+                    f"- Gate: {'PASS' if ok else 'FAIL'}\n")
+          print(report)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write(report)
+          raise SystemExit(0 if ok else 1)
+          PY
