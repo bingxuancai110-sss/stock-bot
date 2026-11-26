@@ -1,5 +1,6 @@
 """Isolated paper fund: no network, broker, scheduler, or production DB access."""
 from copy import deepcopy
+from contextlib import closing
 from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 import hashlib
@@ -116,16 +117,16 @@ class Ledger:
     def __init__(self,path): self.path=str(path)
     def connect(self): return sqlite3.connect(self.path,timeout=10)
     def initialize(self):
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS events (event_id TEXT PRIMARY KEY, digest TEXT NOT NULL, payload TEXT NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS marks (as_of TEXT PRIMARY KEY, payload TEXT NOT NULL)')
             db.execute('INSERT OR IGNORE INTO state VALUES(1,?)',(encode(checkpoint()),))
     def read(self):
-        with self.connect() as db: return json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
+        with closing(self.connect()) as db, db: return json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
     def mark(self,quotes,now,benchmarks=None):
         now=ts(now)
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             s=json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
             if not s['ready'] or now<=ts(s['last_at']): raise ValueError('unreconciled or stale mark')
@@ -141,7 +142,7 @@ class Ledger:
         if code not in listed or not re.fullmatch(r'[0-9]{4}',code) or not is_trading_day(now.date()): raise ValueError('unverified listing/session')
         intent=dict(revision=revision,code=code,side=side,shares=shares,sleeve=sleeve,at=now.isoformat())
         digest=hashlib.sha256(encode(intent).encode()).hexdigest()
-        with self.connect() as db:
+        with closing(self.connect()) as db, db:
             db.execute('BEGIN IMMEDIATE')
             prior=db.execute('SELECT digest,payload FROM events WHERE event_id=?',(event_id,)).fetchone()
             if prior:
