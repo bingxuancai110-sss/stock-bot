@@ -23,10 +23,22 @@ def attach_staging(app, *, mode=None, market=None, ledger=None, token=None):
 
 
 def cached_quotes(market, codes):
-    """Translate authenticated in-process market cache into fund quote format."""
+    """Translate trusted in-process cache; reject fixtures before fund valuation.
+    Source labels are a guard, not authentication; caller must verify origin.
+    """
     codes=tuple(sorted(set(codes)))
     if not codes: return {}
     payload,status=market.read(codes)
-    if status!=200 or payload.get('complete') is not True or set(payload['quotes'])!=set(codes):
+    if not isinstance(payload,dict) or status!=200 or payload.get('complete') is not True:
         raise ValueError('incomplete cached quotes')
-    return {c:dict(row,code=c) for c,row in payload['quotes'].items()}
+    if payload.get('data_mode')=='synthetic_only':
+        raise ValueError('synthetic quotes prohibited for fund')
+    rows=payload.get('quotes')
+    if not isinstance(rows,dict) or set(rows)!=set(codes):
+        raise ValueError('incomplete cached quotes')
+    for code,row in rows.items():
+        if (not isinstance(row,dict) or row.get('code',code)!=code or
+            row.get('source')!='Fugle shared snapshot' or
+            row.get('status') not in ('fresh_intraday','final_close')):
+            raise ValueError('unverified cached quote')
+    return {c:dict(row,code=c) for c,row in rows.items()}
