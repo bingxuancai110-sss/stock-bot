@@ -179,7 +179,7 @@ class Engine:
                     cooldown=max(60,retry) if math.isfinite(retry) else 60
                 except (TypeError,ValueError):
                     cooldown=60
-                status='rate_limited'
+                status='provider_rate_limited'
             elif response.status_code==403 and code=='IX0001':
                 status='index_permission_error'
             elif response.status_code in (401,403):
@@ -204,6 +204,10 @@ class Engine:
                     del s['leases'][code]
                     if status=='updated' and row is not None and now.date()==done.date() and self._fresh(row,done):
                         s['quotes'][code]=row
+                    elif status=='updated':
+                        status='invalid_quote'
+                elif status=='updated':
+                    status='lease_expired'
         return status
 
     def collector(self,role):
