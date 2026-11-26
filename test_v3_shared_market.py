@@ -113,6 +113,13 @@ class SharedTests(unittest.TestCase):
         self.assertIn('2000',second['quotes'])
         self.assertIn('2030',second['quotes'])
         self.assertNotIn('2003',second['quotes'])
+    def test_research_refresh_preserves_rotation(self):
+        self.v3.collector('v3').refresh_pool()
+        self.now+=timedelta(seconds=60)
+        self.pool()
+        second=self.v3.collector('v3').refresh_pool()
+        self.assertIn('2030',second['quotes'])
+        self.assertNotIn('2003',second['quotes'])
     def test_stale_and_day_reset(self):
         self.bot.fetch('bot','2000')
         self.now+=timedelta(seconds=181)
