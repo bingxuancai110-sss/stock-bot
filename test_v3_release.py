@@ -80,3 +80,31 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(attach_staging(app,mode='staging-readonly',market=Market(),ledger=self.l,token=token))
         with self.assertRaises(ValueError):attach_staging(app,mode='staging-readonly',market=Market(),ledger=self.l,token=token)
         client=app.test_client();self.assertEqual(client.get('/api/v3/fund/performance').status_code,401);self.assertEqual(client.post('/api/v3/fund/performance').status_code,405);r=client.get('/api/v3/fund/performance',headers={'Authorization':'Bearer '+token});self.assertEqual(r.status_code,200);self.assertFalse(r.json['reconciled']);self.assertEqual(client.get('/v3/fund').status_code,200)
+    def test_mixed_roundtrip_block(self):
+        self.ready();self.fill();self.now+=timedelta(seconds=1)
+        with self.assertRaisesRegex(ValueError,'mixed or oddlot'):
+            self.fill(event_id='odd',revision=1,shares=1,side='sell',oddlot_payload={})
+    def test_t2_pipeline(self):
+        from v3_shared_market import Engine,DynamicMarket,sqlite_store
+        from v3_research_pool import build_pool
+        from v3_execution import fetch_book
+        from test_v3_execution import ExecutionTests
+        fixture=ExecutionTests();fixture.setUp()
+        class Response:
+            status_code=200
+            def __init__(self,data):self.data=data
+            def json(self):return self.data
+        class Session:
+            def get(_,url,**kw):return Response(fixture.ticker if '/ticker/' in url else fixture.raw)
+        def parse(code,payload,now):
+            return dict(code=code,price=100,previous_close=98,time=int(now.timestamp()*1e6),observed_at=now.timestamp()*1000,closed=False,type='EQUITY')
+        st=sqlite_store(str(Path(self.tmp.name)/'market.db'));st.init_schema()
+        e=Engine(st,Session(),'fake',now=lambda:self.now,is_trading_day=self.calendar,parser=parse)
+        research=build_pool(now=self.now,last_close=date(2026,11,25),last_chips=date(2026,11,25),intraday=True,listed=['2330'],holdings=[],short_version=15,blackhorse=dict(source_date='2026-11-25',computed_at=self.now.isoformat(),rows=[dict(code='2330',quote_date='2026-11-26',score=90)]))
+        e.set_pool(listed=['2330'],holdings=[],candidates=research['codes'],as_of=self.now.date().isoformat());self.assertEqual(e.fetch('v3','2330'),'updated')
+        q=cached_quotes(DynamicMarket(e),['2330']);f=fetch_book(e,'2330','regular');self.ready()
+        r=self.fill(shares=2000,quotes=q,limit=101,**{k:v for k,v in f.items() if k!='book'})
+        self.assertEqual(r['gross'],'201000.00');self.assertEqual(r['settlement_due'],'2026-12-01');self.assertEqual(self.l.read()['cash'],'10000000')
+        with st.transaction() as s:self.assertEqual(len(s['calls']),3)
+        self.now=self.now.replace(month=12,day=1);settle(self.l,ids=['t1'],now=self.now,is_trading_day=self.calendar,evidence_ref='fixture')
+        self.assertEqual(self.l.read()['cash'],'9798713.57');self.assertEqual(self.l.read()['positions']['2330']['shares'],2000)
