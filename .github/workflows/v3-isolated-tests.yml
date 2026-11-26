@@ -36,12 +36,12 @@ jobs:
           python - <<'PY'
           import os
           import unittest
-          modules = "test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool test_v3_fund test_v3_execution test_v3_management test_v3_release test_v3_staging test_v3_review_retry test_v3_cache_provenance test_bot_history_budget".split()
+          modules = "test_v3_market_api test_v3_shared_market test_v3_postgres_market test_v3_research_pool test_v3_fund test_v3_execution test_v3_management test_v3_release test_v3_staging test_v3_review_retry test_v3_cache_provenance test_bot_history_budget test_bot_snapshot_budget".split()
           suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
           result = unittest.TextTestRunner(verbosity=2).run(suite)
           skipped = len(result.skipped)
           total = result.testsRun
-          ok = result.wasSuccessful() and skipped == 0 and total >= 169
+          ok = result.wasSuccessful() and skipped == 0 and total >= 187
           report = (f"## V3 strict regression\n\n"
                     f"- Commit: {os.environ.get('GITHUB_SHA','local')}\n"
                     f"- Tests run: {total}\n"
