@@ -2,6 +2,7 @@ services:
   - type: worker
     name: stock-bot-short-term
     runtime: python
+    branch: main
     region: ohio
     plan: 0.5c-512mb
     buildCommand: pip install -r requirements.txt
