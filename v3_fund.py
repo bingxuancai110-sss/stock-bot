@@ -82,7 +82,10 @@ def quote(q,code,now,*,execution=False,side=None,shares=0):
 def valuation(state,quotes,now):
     now=ts(now)
     values={c:money(p['shares']*quote(quotes[c],c,now)) for c,p in state['positions'].items()}
-    cash=dec(state['cash']); equity=cash+sum(values.values(),D(0))+sum((dec(x['amount']) for x in state.get('receivables',{}).values()),D(0))
+    from v3_accounting import balances, share_claim_value
+    b=balances(state); cash=b['available_cash']; equity=b['settled_cash']+b['receivable']-b['payable']+sum(values.values(),D(0))+sum((dec(x['amount']) for x in state.get('receivables',{}).values()),D(0))+share_claim_value(state,quotes,now)
+    for x in state.get('share_claims',{}).values():
+        values[x['code']]=values.get(x['code'],D(0))+money(x['shares']*quote(quotes[x['code']],x['code'],now))
     if equity<=0: raise ValueError('nonpositive equity')
     peak=max(dec(state['peak']),equity)
     drawdown=(peak-equity)/peak
@@ -106,7 +109,8 @@ def proposal(state,quotes,now,*,code,conviction,sleeve,stop=None):
     if not state['ready'] or v['cash_weight']<=cash_floor or conviction<D('.65'):
         return dict(action='hold',reason='reconciliation, cash or conviction gate')
     target=(D('.02')+D('.03')*conviction) if sleeve=='tactical' else D('.05')+D('.15')*conviction
-    existing=v['values'].get(code,D(0)); budget=min(v['equity']*target-existing,dec(state['cash'])-v['equity']*cash_floor)
+    from v3_accounting import balances
+    existing=v['values'].get(code,D(0)); budget=min(v['equity']*target-existing,balances(state)['available_cash']-v['equity']*cash_floor)
     # Core/tactical total caps enforced again at fill. Full lots only in this prototype.
     shares=max(0,int(budget/(price*(1+FEE)))//1000*1000)
     return dict(action='buy' if shares else 'hold',shares=shares,reason='research target; subject to execution guards')
@@ -156,8 +160,13 @@ class Ledger:
                 return json.loads(prior[1])
             s=json.loads(db.execute('SELECT payload FROM state WHERE id=1').fetchone()[0])
             if not s['ready'] or s['version']!=revision or now<=ts(s['last_at']): raise ValueError('unreconciled, stale revision or time')
+            for (raw_event,) in db.execute('SELECT payload FROM events'):
+                e=json.loads(raw_event)
+                if e.get('code')==code and e.get('side')!=side and ts(e['at']).date()==now.date() and (oddlot_payload is not None or e.get('execution_model')=='oddlot_print_estimate'):
+                    raise ValueError('mixed or oddlot same-day round trip blocked')
             v=valuation(s,quotes,now); p=s['positions'].get(code)
             if p and p['sleeve']!=sleeve: raise ValueError('sleeve mismatch')
+            if any(x['code']==code and x['sleeve']!=sleeve for x in s.get('share_claims',{}).values()): raise ValueError('share claim sleeve mismatch')
             if oddlot_payload is not None:
                 from v3_management import oddlot_estimate
                 quote(quotes[code],code,now)
@@ -196,15 +205,20 @@ class Ledger:
                 fee,tax=dec(charge['fee']),dec(charge['tax'])
             else:
                 fee=money(gross*FEE); tax=money(gross*TAX) if side=='sell' else D(0)
+            t2=s.get('accounting_mode')=='t2'
+            if t2:
+                from v3_accounting import record_trade
+                record_trade(s,event_id=event_id,code=code,side=side,shares=shares,gross=gross,fee=fee,tax=tax,now=now,is_trading_day=is_trading_day)
             cash=dec(s['cash']); positions=deepcopy(s['positions'])
             if side=='buy':
                 if sleeve=='legacy': raise ValueError('legacy buys blocked')
-                cash-=gross+fee
+                if not t2: cash-=gross+fee
                 basis=dec(p['basis']) if p else D(0)
                 positions[code]=dict(shares=shares+(p['shares'] if p else 0),basis=str(basis+gross+fee),sleeve=sleeve)
             else:
                 if not p or shares>p['shares']: raise ValueError('short selling prohibited')
-                sold=money(dec(p['basis'])*shares/p['shares']); cash+=gross-fee-tax
+                sold=money(dec(p['basis'])*shares/p['shares'])
+                if not t2: cash+=gross-fee-tax
                 s['realized']=str(dec(s['realized'])+gross-fee-tax-sold)
                 if shares==p['shares']: del positions[code]
                 else: positions[code]=dict(p,shares=p['shares']-shares,basis=str(dec(p['basis'])-sold))
@@ -213,10 +227,14 @@ class Ledger:
             if side=='buy':
                 if post['cash_weight']<floor or post['values'][code]/equity>D('.20'): raise ValueError('cash or single-stock cap')
                 tactical=sum((post['values'][c] for c,p in positions.items() if p['sleeve']=='tactical'),D(0))
+                tactical+=sum((money(x['shares']*quote(quotes[x['code']],x['code'],now)) for x in s.get('share_claims',{}).values() if x['sleeve']=='tactical' and x['code'] not in positions),D(0))
                 if tactical/equity>D('.20') or (sleeve=='tactical' and gross/equity>D('.08')): raise ValueError('tactical cap')
             if cash<0: raise ValueError('negative cash')
             s.update(version=revision+1,last_at=now.isoformat(),peak=str(post['peak']),max_drawdown=str(max(dec(s.get('max_drawdown','0')),v['drawdown'],post['drawdown'])))
             result=dict(event_id=event_id,revision=s['version'],code=code,side=side,shares=shares,price=str(price),gross=str(gross),fee=str(fee),tax=str(tax),cash=str(cash),nav=str(post['nav']),paper_only=True,at=now.isoformat())
+            if t2:
+                from v3_accounting import balances
+                result.update(settlement_due=s['settlements'][event_id]['due'],available_cash=str(balances(s)['available_cash']),accounting_mode='t2')
             if oddlot_payload is not None:
                 result.update(execution_model='oddlot_print_estimate',print_id=plan['print_id'],actual_fill_verified=False)
             if book_payload is not None:
