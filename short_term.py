@@ -1238,7 +1238,7 @@ class ShortTermService:
                     if memory_deferred:
                         self.defer_for_memory(session)
 
-    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False):
+    def payload(self, refresh=False, sector=None, position=None, shape=None, offset=0, limit=MAX_PICKS, schedule=False, direction="long", price_range="all", sort="signal", quote_only=False, summary=False, code=None):
         with self.lock:
             intraday=self.intraday()
             close_starting = not intraday and self.close_not_before and time.monotonic() < self.close_not_before
@@ -1274,7 +1274,7 @@ class ShortTermService:
                 if self.calendar(expected):break
                 expected-=timedelta(days=1)
             quote_session = (day(expected), intraday)
-            if cached and not quote_only and expected == self.now().date() and (intraday or self.now().hour >= 14):
+            if cached and not quote_only and code is None and expected == self.now().date() and (intraday or self.now().hour >= 14):
                 self.queue_card_quotes(cached, quote_session)
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
@@ -1302,6 +1302,8 @@ class ShortTermService:
             direction='short' if direction=='short' else 'long'
             rows=[]
             saved_rows=(cached or {}).get('short_rows',[]) if direction=='short' else (cached or {}).get('all_rows',(cached or {}).get('rows',[]))
+            if code is not None:
+                saved_rows = [row for row in saved_rows if row.get('code') == code]
             for row in saved_rows:
                 row = dict(row)
                 market_quote = row.pop('market_quote', None) or {}
@@ -1371,6 +1373,9 @@ class ShortTermService:
             if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             rows.sort(key=(lambda r:(display_price(r) is None, (-1 if sort=='price_desc' else 1)*(display_price(r) or 0),r['code'])) if sort!='signal' else clarity_rank)
+            if summary and sort == 'signal' and not position:
+                group_order = {'held': 0, 'waiting': 1, 'closed': 2, 'unknown': 3}
+                rows.sort(key=lambda row: group_order[row['position_group']])
             total=len(rows)
             recent=dict(entries=0,exits=0,active=sum(position_group(r)=='held' for r in rows),last_entry_date=None)
             for row in rows:
@@ -1396,6 +1401,21 @@ class ShortTermService:
             notifications = live_action_notifications(cached, self.now()) if intraday and signals_current else []
             page_rows = []
             for row in rows[offset:offset + limit]:
+                if summary:
+                    confirmed = [event for event in row.get('signals', []) if not event.get('provisional')]
+                    quote = row.get('display_quote') or {}
+                    spreads = trade_spreads(confirmed, quote.get('price', row.get('price')),
+                                            quote.get('date', row.get('date')), direction=direction)
+                    completed = spreads['completed']
+                    last = completed[-1] if completed else None
+                    opened = spreads['open']
+                    fields = ('code', 'name', 'date', 'price', 'change_pct', 'display_quote', 'position_group',
+                              'current_action', 'latest_event', 'provisional', 'signal_stage')
+                    card = {field: row.get(field) for field in fields}
+                    card.update(trade=opened if position_group(row) == 'held' else
+                                last if position_group(row) == 'closed' else None)
+                    page_rows.append(card)
+                    continue
                 allocated, spreads = expanded(row)
                 card = dict(row, signals=allocated, spreads=spreads)
                 chart_data = card.pop('chart_data', None)
@@ -1430,8 +1450,16 @@ def create_blueprint(*, login, service):
     @login
     def short_term(uid):
         try:
-            result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'),price_range=request.args.get('price_range','all'),sort=request.args.get('sort','signal'))
-            response=jsonify(result)
+            code = request.args.get('code')
+            if code is not None:
+                if len(code) != 4 or not code.isascii() or not code.isdigit():
+                    return jsonify(ok=False, error='股票代號格式錯誤'), 400
+                result = service.payload(direction=request.args.get('direction', 'long'), code=code, limit=1)
+                response = jsonify(ok=bool(result['rows']), row=next(iter(result['rows']), None))
+                response.status_code = 200 if result['rows'] else 404
+            else:
+                result=service.payload(request.args.get('refresh')=='1',sector=request.args.get('sector'),position=request.args.get('position'),shape=request.args.get('shape'),offset=request.args.get('offset',0),limit=request.args.get('limit',MAX_PICKS),direction=request.args.get('direction','long'),price_range=request.args.get('price_range','all'),sort=request.args.get('sort','signal'),summary=request.args.get('view')=='summary')
+                response=jsonify(result)
         except Exception as exc:
             print('短線頁讀取暫緩：' + type(exc).__name__, flush=True)
             response=jsonify(ok=False,error='短線研究暫時無法載入，請稍後重試')

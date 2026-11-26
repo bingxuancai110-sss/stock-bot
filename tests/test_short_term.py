@@ -51,6 +51,13 @@ def test_saved_legacy_and_compact_charts_keep_the_same_card_history():
     assert first['rows'][0]['bars'] == original
     assert 'bars' not in s.cached['all_rows'][0]
     assert 'chart_data' not in first['rows'][0]
+    summary = s.payload(summary=True, limit=40)
+    detail = s.payload(code='2330', limit=1)
+    assert summary['meta']['limit'] == 40
+    assert not {'chart_data', 'bars', 'signals', 'trailing'} & summary['rows'][0].keys()
+    assert detail['rows'][0]['bars'] == original
+    assert detail['rows'][0]['signals'] == first['rows'][0]['signals']
+    assert not s.payload(code='2317')['rows']
     serialized = st.json.loads(st.json.dumps(s.cached))
     s.loaded = False
     s.store.load.return_value = {'payload': serialized}
@@ -401,6 +408,9 @@ def test_api_is_authenticated_read_only_and_does_not_cache():
     response=client.get(url,headers={'X-Test-Login':'1'})
     assert response.status_code==200 and response.headers['Cache-Control']=='no-store'
     assert client.post(url,headers={'X-Test-Login':'1'}).status_code==405
+    assert client.get(url+'?code=2330').status_code==401
+    assert client.get(url+'?code=../bad',headers={'X-Test-Login':'1'}).status_code==400
+    assert client.get(url+'?code=2330',headers={'X-Test-Login':'1'}).status_code==404
 
 
 def test_october_entry_and_november_exit_are_not_current_buy_instructions():
