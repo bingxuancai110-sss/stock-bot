@@ -1,0 +1,32 @@
+name: Short-term scan runner pilot
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/short-term-actions-pilot.yml
+      - scripts/probe_short_term_actions.py
+      - short_term.py
+      - short_side.py
+
+permissions:
+  contents: read
+
+jobs:
+  close-sample:
+    if: github.head_ref == 'codex/github-short-term-pilot' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install scan dependencies
+        run: python -m pip install Flask==3.0.3
+      - name: Fetch TWSE daily bars and run long and short strategies
+        run: python -m scripts.probe_short_term_actions
+      - name: Save pilot result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: short-term-pilot
+          path: short-term-pilot.json
+          retention-days: 3
+          if-no-files-found: error
