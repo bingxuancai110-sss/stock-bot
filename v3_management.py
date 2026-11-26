@@ -93,8 +93,16 @@ def dashboard(ledger):
 
 
 def register_management(app, ledger, token):
-    from flask import jsonify, request
+    from flask import jsonify, request, send_file
+    from pathlib import Path
     if not isinstance(token,str) or len(token)<32: raise ValueError('weak token')
+    @app.get('/v3/fund')
+    def v3_fund_shell():
+        response=send_file(Path(__file__).with_name('v3_fund_dashboard.html'),mimetype='text/html')
+        response.headers['Cache-Control']='no-store'
+        response.headers['Referrer-Policy']='no-referrer'
+        response.headers['Content-Security-Policy']="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        return response
     @app.get('/api/v3/fund/performance')
     def v3_fund_performance():
         allowed=hmac.compare_digest(request.headers.get('Authorization','').encode(),('Bearer '+token).encode())
