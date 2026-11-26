@@ -67,7 +67,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):cached_quotes(Market(),['2330'])
     def test_cache_format(self):
         class Market:
-            def read(self,codes):return {'complete':True,'quotes':{'2330':{'price':100}}},200
+            def read(self,codes):return {'complete':True,'quotes':{'2330':{'price':100,'source':'Fugle shared snapshot','status':'fresh_intraday'}}},200
         self.assertEqual(cached_quotes(Market(),['2330'])['2330']['code'],'2330')
     def test_host_http(self):
         try:from flask import Flask
