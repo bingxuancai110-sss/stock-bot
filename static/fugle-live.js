@@ -374,9 +374,43 @@
     const colors=['#2676A5','#D84B45','#14916C','#8165B5','#D29430','#3A8FA3','#CF6A36','#6E8498'];
     items.forEach((item,index)=>{
       if(box.querySelector('[data-allocation-select="'+item.code+'"]'))return;
-      const button=document.createElement('button'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('b');button.type='button';button.className='allocation-item';button.dataset.allocationSelect=item.code;button.dataset.allocationName=names[item.code]||item.code;button.setAttribute('aria-pressed','false');value.setAttribute('data-home-sensitive','');dot.style.background=colors[index%colors.length];label.textContent=names[item.code]||item.code;button.append(dot,label,value);box.querySelector('.position-allocation-legend').append(button);
-      const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.classList.add('allocation-slice');circle.dataset.allocationCode=item.code;Object.entries({cx:50,cy:50,r:40,fill:'none',stroke:colors[index%colors.length],'stroke-width':12,transform:'rotate(-90 50 50)',tabindex:0,role:'button','aria-label':names[item.code]||item.code}).forEach(([k,v])=>circle.setAttribute(k,v));const svg=box.querySelector('svg');svg.insertBefore(circle,svg.lastElementChild);
+      const name=item.code==='cash'?'現金':names[item.code]||item.code;
+      const color=item.code==='cash'?'#5E7188':colors[index%colors.length];
+      const button=document.createElement('button'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('b');button.type='button';button.className='allocation-item';button.dataset.allocationSelect=item.code;button.dataset.allocationName=name;button.setAttribute('aria-pressed','false');value.setAttribute('data-home-sensitive','');dot.style.background=color;label.textContent=name;button.append(dot,label,value);box.querySelector('.position-allocation-legend').append(button);
+      const circle=document.createElementNS('http://www.w3.org/2000/svg','circle');circle.classList.add('allocation-slice');circle.dataset.allocationCode=item.code;Object.entries({cx:50,cy:50,r:40,fill:'none',stroke:color,'stroke-width':14,transform:'rotate(-90 50 50)',tabindex:0,role:'button','aria-label':name}).forEach(([k,v])=>circle.setAttribute(k,v));const svg=box.querySelector('svg');svg.insertBefore(circle,svg.lastElementChild);
     });return box;
+  }
+  function updateAllocation(positions,complete,setPrivate,money){
+    const existing=document.querySelector('.position-allocation');
+    if(!complete||!document.querySelector('[data-position-code]')||existing?.dataset.allocationCash==='')return;
+    const cash=Number(existing?.dataset.allocationCash||0);
+    const items=(positions.updates||[]).filter(item=>Number(item.value)>0);
+    if(cash>0)items.push({code:'cash',value:cash});
+    const total=items.reduce((value,item)=>value+Number(item.value),0);
+    if(!total)return;
+    items.sort((a,b)=>b.value-a.value);
+    const box=ensureAllocation(items),svg=box.querySelector('svg');
+    const legend=box.querySelector('.position-allocation-legend'),circumference=2*Math.PI*40;
+    let offset=0;
+    items.forEach(item=>{
+      const button=legend.querySelector('[data-allocation-select="'+item.code+'"]');
+      const slice=svg.querySelector('[data-allocation-code="'+item.code+'"]');
+      const weight=Number(item.value)/total*100,arc=circumference*weight/100;
+      button.dataset.allocationWeight=weight;
+      button.dataset.allocationValue=item.value;
+      setPrivate(button.querySelector('b'),money(weight,1)+'%');
+      legend.append(button);
+      slice.setAttribute('stroke-dasharray',arc+' '+circumference);
+      slice.setAttribute('stroke-dashoffset',-offset);
+      svg.insertBefore(slice,svg.lastElementChild);
+      offset+=arc;
+    });
+    const selected=legend.querySelector('[aria-pressed=true]');
+    setPrivate(box.querySelector('[data-allocation-center-weight]'),selected?money(selected.dataset.allocationWeight,1)+'%':'100.0%');
+    setPrivate(box.querySelector('[data-allocation-center-value]'),money(selected?selected.dataset.allocationValue:total)+' 元');
+    box.querySelectorAll('.position-allocation-chart,[data-allocation-reset]').forEach(el=>{el.hidden=false;});
+    const pending=box.querySelector('.position-allocation-pending');
+    if(pending)pending.hidden=true;
   }
   function applyValuations(data){
     const positions=data.positions||{},totals=positions.totals||{},complete=totals.complete===true;
@@ -397,14 +431,8 @@
           if(card.closest('#portfolio-v2')){const weight=Number(item.weight)||0,track=card.querySelector('.p2-weight-track i');if(track)track.style.width=Math.max(0,Math.min(100,weight))+'%';card.dataset.sortValue=String(item.value||0);card.dataset.sortPl=String(item.net_pl||0);card.dataset.sortPct=String(item.net_pct||0);card.dataset.sortWeight=String(weight);}
         }
       }
-      const legend=document.querySelector('[data-allocation-select="'+item.code+'"]');
-      if(legend&&complete&&item.weight!=null){legend.dataset.allocationWeight=item.weight;legend.dataset.allocationValue=item.value;const text=legend.querySelector('b');if(text)setPrivate(text,money(item.weight,1)+'%');}
     });
-    const allocation=complete&&document.querySelector('[data-position-code]')?ensureAllocation(positions.updates||[]):document.querySelector('.position-allocation');
-    if(allocation){
-      allocation.setAttribute('aria-label',complete?'富果行情持股配置':'等待完整富果行情，配置保留前次資料');
-      if(complete){let offset=0;allocation.querySelectorAll('.allocation-slice').forEach(slice=>{const item=(positions.updates||[]).find(x=>x.code===slice.dataset.allocationCode);if(!item)return;const legend=allocation.querySelector('[data-allocation-select="'+item.code+'"]');if(legend){legend.dataset.allocationWeight=item.weight;legend.dataset.allocationValue=item.value;setPrivate(legend.querySelector('b'),money(item.weight,1)+'%');}const arc=2*Math.PI*40*item.weight/100;slice.setAttribute('stroke-dasharray',arc+' '+(2*Math.PI*40-arc));slice.setAttribute('stroke-dashoffset',-offset);offset+=arc;});const selected=allocation.querySelector('[data-allocation-select][aria-pressed=true]');const title=allocation.querySelector('[data-allocation-center-title]'),weight=allocation.querySelector('[data-allocation-center-weight]'),value=allocation.querySelector('[data-allocation-center-value]');if(weight)setPrivate(weight,selected?money(selected.dataset.allocationWeight,1)+'%':'100%');if(value)setPrivate(value,money(selected?selected.dataset.allocationValue:totals.value)+' 元');}
-    }
+    updateAllocation(positions,complete,setPrivate,money);
   }
   // Keep complete valuation snapshots intact while a new quote batch is incomplete.
   // A server-generated context prevents restoring valuations after position/settings changes.

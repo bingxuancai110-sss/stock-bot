@@ -13,7 +13,7 @@ import pytest
 def compiled():
     tree = ast.parse((Path(__file__).parents[1] / 'main.py').read_text(encoding='utf-8'))
     names = {'_line_fugle_holdings_quotes', '_line_hidden_holdings_flex',
-             '_line_hidden_combined_portfolio_flex'}
+             '_line_hidden_combined_portfolio_flex', '_line_hidden_operation_report'}
     return {n.name: compile(ast.Module(body=[n], type_ignores=[]), '<actual-line>', 'exec')
             for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names}
 
@@ -48,6 +48,7 @@ def test_fresh_fugle_wins_and_mis_only_fetches_missing_symbols(compiled):
               _fetch_twse_mis_quotes=Mock(return_value={'2383': fallback}),
               _line_hidden_holdings_flex=Mock(return_value=SimpleNamespace(contents={})),
               _line_hidden_operation_report=Mock(return_value=SimpleNamespace(contents={})),
+              get_portfolio_cash=lambda uid: 120.0,
               FlexSendMessage=lambda **kw: kw)
     exec(compiled['_line_hidden_combined_portfolio_flex'], ns)
     ns['_line_hidden_combined_portfolio_flex']('owner')
@@ -55,6 +56,7 @@ def test_fresh_fugle_wins_and_mis_only_fetches_missing_symbols(compiled):
     prices = ns['_line_hidden_holdings_flex'].call_args.kwargs['prices']
     assert prices == {'2330': fresh, '2383': fallback}
     assert ns['_line_hidden_operation_report'].call_args.kwargs['price_map'] == prices
+    assert ns['_line_hidden_operation_report'].call_args.kwargs['cash_amount'] == 120.0
 
 
 def test_card_keeps_real_flat_price_but_marks_old_quote_pending_and_shows_times(compiled):
@@ -72,6 +74,26 @@ def test_card_keeps_real_flat_price_but_marks_old_quote_pending_and_shows_times(
     assert '待更新' in text
     assert '2026-11-10 10:42:00' in text
     assert '富果' in text
+
+
+def test_cash_is_sorted_with_stocks_and_report_displays_the_same_weight(compiled):
+    ns = dict(FlexSendMessage=lambda **kw: kw, taiwan_today=lambda: datetime(2026,11,10).date(),
+              stock_display_name=lambda c, *a: c, short_company_name=lambda n: n,
+              get_position_change_logs=lambda *a, **k: [], _filter_voided_same_day_logs=lambda logs: logs)
+    exec(compiled['_line_hidden_holdings_flex'], ns)
+    exec(compiled['_line_hidden_operation_report'], ns)
+    positions = [{'code': '2330', 'shares': 1}, {'code': '2383', 'shares': 1}]
+    prices = {'2330': {'close': 80}, '2383': {'close': 20}}
+    card = ns['_line_hidden_holdings_flex']('owner', positions, prices, cash_amount=100)
+    allocation = card['contents']['body']['contents'][2]['contents']
+    labels = [row['contents'][0]['contents'][:2] for row in allocation]
+    assert [(name['text'], weight['text']) for name, weight in labels] == [
+        ('現金', '50.0%'), ('2330（2330）', '40.0%'), ('2383（2383）', '10.0%')]
+    report = ns['_line_hidden_operation_report']('owner', positions, prices, cash_amount=100)
+    cash = report['contents']['body']['contents'][1]['contents']
+    assert [column['text'] for column in cash] == ['現金', '50.0%']
+    report_pending = ns['_line_hidden_operation_report']('owner', positions, {}, cash_amount=100)
+    assert report_pending['contents']['body']['contents'][1]['contents'][1]['text'] == '待確認'
 
 @pytest.mark.parametrize('price,expected', [(109.5, '漲停'), (89.6, '跌停'), (105, None)])
 def test_official_limits_survive_collector_and_render_distinct_badges(compiled, price, expected):

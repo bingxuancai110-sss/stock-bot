@@ -64,23 +64,39 @@ def render_holdings(rows):
                  "backgroundColor": "#E9EEF3", "cornerRadius": "3px", "contents": [
                       {"type": "box", "layout": "vertical", "width": f"{max(0, min(100, weight or 0)):.1f}%",
                       "height": "6px", "backgroundColor": "#2D8B92", "cornerRadius": "3px", "contents": []}]}
+        cash = code == "cash"
+        if cash:
+            track["contents"][0]["backgroundColor"] = "#5E7188"
         content = [{"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
-                    "contents": [text(f"{name}（{code}）", weight="bold", wrap=True, flex=1),
+                    "contents": [text(name if cash else f"{name}（{code}）", weight="bold", wrap=True, flex=1),
                                  text(weight_text, "md", color=NAVY if weight is not None else MUTED,
                                       weight="bold", align="end", flex=0)]},
-                   track,
-                   {"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
-                    "margin": "xs", "contents": [text(pct_label, "xxs", MUTED, flex=1), change]}]
-        if pct_date:
+                   track]
+        if not cash:
+            content.append({"type": "box", "layout": "horizontal", "spacing": "sm", "alignItems": "center",
+                            "margin": "xs", "contents": [text(pct_label, "xxs", MUTED, flex=1), change]})
+        if not cash and pct_date:
             note = f"資料截至 {pct_date} 收盤 · " + (note.partition(" · ")[2] or "最近可用行情")
             content.append(text(note, "xxs", MUTED, wrap=True, margin="xs"))
-        elif pct is None:
+        elif not cash and pct is None:
             content.append(text("行情待更新 · " + note, "xxs", MUTED, wrap=True, margin="xs"))
         if i < len(rows) - 1:
             content.append({"type": "separator", "margin": "md", "color": "#E9EEF3"})
         stocks.append({"type": "box", "layout": "vertical", "margin": "md", "contents": content})
-    return [text("秉軒的投資組合", "xl", "#203449", weight="bold"),
+    items = [text("秉軒的投資組合", "xl", "#203449", weight="bold"),
             text("持股配置比例", "xs", MUTED, margin="sm"),
-            {"type": "box", "layout": "vertical", "contents": stocks},
-            {"type": "separator", "margin": "md", "color": "#E9EEF3"},
-            {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "sm", "contents": quote_footer(rows)}]
+            {"type": "box", "layout": "vertical", "contents": stocks}]
+    stock_rows = [row for row in rows if row[1] != "cash"]
+    if stock_rows:
+        items.extend([{"type": "separator", "margin": "md", "color": "#E9EEF3"},
+                      {"type": "box", "layout": "vertical", "spacing": "xs", "margin": "sm",
+                       "contents": quote_footer(stock_rows)}])
+    return items
+
+
+def report_cash(weight):
+    weight_label = f"{weight:.1f}%" if weight is not None else "待確認"
+    return {"type": "box", "layout": "horizontal", "paddingAll": "10px", "margin": "sm",
+            "cornerRadius": "8px", "backgroundColor": "#EFF3F7", "contents": [
+                text("現金", weight="bold", flex=1),
+                text(weight_label, weight="bold", align="end", flex=0)]}

@@ -2318,6 +2318,7 @@ def init_db():
             ("other_assets", "TEXT"),
             ("drawdown_experience", "TEXT"),
             ("ui_theme", "TEXT"),
+            ("portfolio_cash", "NUMERIC(16,2) NOT NULL DEFAULT 0"),
         ]:
             cursor.execute(
                 f"ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS {_col} {_type}")
@@ -2863,6 +2864,48 @@ def get_portfolio_target_weights(user_id):
         return {}
     finally:
         release_db_connection(conn)
+
+
+def get_portfolio_cash(user_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT portfolio_cash FROM user_profile WHERE user_id=%s", (user_id,))
+            row = cur.fetchone()
+            return float(row[0]) if row else 0.0
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        print("⚠️ 讀取現金餘額失敗：" + type(exc).__name__, flush=True)
+        return None
+    finally:
+        if conn is not None:
+            release_db_connection(conn)
+
+
+def save_portfolio_cash(user_id, raw):
+    from decimal import Decimal
+    raw = str(raw or "").strip().replace(",", "")
+    if not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,2})?", raw):
+        return "請輸入有效的台幣金額，最小為 0 元，最多兩位小數。"
+    conn = None
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cur:
+            cur.execute("""INSERT INTO user_profile(user_id, portfolio_cash)
+                VALUES (%s, %s) ON CONFLICT(user_id) DO UPDATE
+                SET portfolio_cash=EXCLUDED.portfolio_cash""", (user_id, Decimal(raw)))
+        conn.commit()
+        return ""
+    except Exception as exc:
+        if conn is not None:
+            conn.rollback()
+        print("⚠️ 儲存現金餘額未確認：" + type(exc).__name__, flush=True)
+        return "暫時無法確認現金餘額，請重新開啟持股頁查看。"
+    finally:
+        if conn is not None:
+            release_db_connection(conn)
 
 
 def save_portfolio_target_weights(user_id, weights):
@@ -28734,7 +28777,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261122-1"></script>
-<script defer src="/static/fugle-live.js?v=20261109-2"></script>
+<script defer src="/static/fugle-live.js?v=20261125-cash"></script>
 </head><body id="stockbot-app" class="{'auth-entry-page' if title == '登入台股 BOT' else ''}" data-app-view="{html.escape(str(active_nav or 'page'), quote=True)}" data-stockbot-ui-version="v2-template-refactor">
 <div id="page-nav-loader" aria-hidden="true">
   <div class="nav-loader-card">
@@ -32624,6 +32667,60 @@ def render_positions_fast_summary(uid, preview=False):
 </section>'''
 
 
+def render_position_allocation(allocation_items, total_value, held_count, cash_amount, reopen=False):
+    allocation_ready = cash_amount is not None and len(allocation_items) == held_count
+    asset_total = total_value + (cash_amount or 0)
+    allocation_items = list(allocation_items)
+    if cash_amount:
+        allocation_items.append({"code": "cash", "name": "現金", "value": cash_amount})
+    allocation_items.sort(key=lambda item: item["value"], reverse=True)
+    cash_value = f"{cash_amount:,.2f}".rstrip("0").rstrip(".") if cash_amount is not None else "暫時無法讀取"
+    cash_form = f'''<details id="position-cash" class="position-cash"{' open' if reopen else ''}>
+  <summary><b>現金餘額</b><span data-home-sensitive>{cash_value}{' 元' if cash_amount is not None else ''}</span><span>編輯</span></summary>
+  <form method="post" action="/web/positions#position-cash">
+    {csrf_hidden_input()}<input type="hidden" name="action" value="save_cash">
+    <label for="position-cash-input">台幣金額</label>
+    <input id="position-cash-input" name="portfolio_cash" type="number" min="0" max="999999999999.99" step="0.01" inputmode="decimal" value="{cash_amount if cash_amount is not None else ''}" required>
+    <button type="submit">儲存</button>
+  </form>
+</details>'''
+    if allocation_items and asset_total and allocation_ready:
+        _allocation_colors = ["#2676A5", "#D84B45", "#14916C", "#8165B5",
+                              "#D29430", "#3A8FA3", "#CF6A36", "#6E8498"]
+        _circ = 2 * math.pi * 40
+        _arc_offset = 0.0
+        _arc_html, _legend_html = [], []
+        for _i, _item in enumerate(allocation_items):
+            _weight = _item["value"] / asset_total * 100
+            _color = "#5E7188" if _item["code"] == "cash" else _allocation_colors[_i % len(_allocation_colors)]
+            _arc_len = _circ * max(0.0, min(100.0, _weight)) / 100.0
+            _code_attr = html.escape(_item["code"], quote=True)
+            _name_text = html.escape(_item["name"])
+            _arc_html.append(
+                f'<circle class="allocation-slice" data-allocation-code="{_code_attr}" '
+                f'cx="50" cy="50" r="40" fill="none" stroke="{_color}" stroke-width="14" '
+                f'stroke-dasharray="{_arc_len:.3f} {_circ:.3f}" '
+                f'stroke-dashoffset="{-_arc_offset:.3f}" transform="rotate(-90 50 50)" '
+                f'tabindex="0" role="button" aria-label="{_name_text}，權重 {_weight:.1f}%"></circle>')
+            _legend_html.append(
+                f'<button type="button" class="allocation-item" data-allocation-select="{_code_attr}" '
+                f'data-allocation-name="{_name_text}" data-allocation-weight="{_weight:.4f}" data-allocation-value="{_item["value"]:.2f}" '
+                f'aria-pressed="false"><i style="background:{_color}"></i><span>{_name_text}</span>'
+                f'<b data-home-sensitive>{_weight:.1f}%</b></button>')
+            _arc_offset += _arc_len
+    else:
+        _arc_html, _legend_html = [], []
+    return f'''<section class="position-allocation" data-allocation-cash="{cash_amount if cash_amount is not None else ''}" aria-label="資產配置互動圖表">
+  <div class="position-allocation-head"><h2>資產配置</h2><button type="button" data-allocation-reset{' hidden' if not _arc_html else ''}>顯示全部</button></div>
+  {cash_form}
+  <p class="position-allocation-pending"{' hidden' if allocation_ready else ''}>資料尚未齊全，比例待確認。</p>
+  <div class="position-allocation-chart"{' hidden' if not _arc_html else ''}>
+    <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="持股與現金權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>總資產</b><strong data-allocation-center-weight data-home-sensitive>100.0%</strong><small data-allocation-center-value data-home-sensitive>{asset_total:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
+    <div class="allocation-selection" aria-live="polite"><strong>點選圓環或名稱查看占比</strong></div>
+  </div>
+</section>'''
+
+
 @app.route("/web/positions", methods=["GET", "POST"])
 @web_login_required
 def web_positions(uid):
@@ -32670,7 +32767,7 @@ def web_positions(uid):
 
     # POST 賣出一定要先讀手續費設定；GET 則等快取檢查後再讀，避免切頁時做不必要的 DB round-trip。
     fee_disc = min_fee = None
-    if request.method == "POST" and request.form.get("action") not in {"sell", "sell_all"}:
+    if request.method == "POST" and request.form.get("action") not in {"sell", "sell_all", "save_cash"}:
         fee_disc, min_fee = get_fee_settings(get_profile(uid))
 
     msg = ""
@@ -32700,7 +32797,13 @@ def web_positions(uid):
 
     if request.method == "POST":
         action = request.form.get("action")
-        if action == "save_target_weights":
+        if action == "save_cash":
+            msg = save_portfolio_cash(uid, request.form.get("portfolio_cash"))
+            if not msg:
+                token = request.args.get("t")
+                token_query = "&t=" + quote(token, safe="") if token else ""
+                return redirect("/web/positions?cash_saved=1" + token_query + "#position-cash", 303)
+        elif action == "save_target_weights":
             # Targets are personal preferences only; never modify position/trade tables.
             current_codes = {str(x.get("code") or "").strip()
                              for x in merge_positions(get_positions(uid))}
@@ -33056,8 +33159,7 @@ def web_positions(uid):
                                   price["name"] if price else None)
         weight = (value / total_value * 100) if total_value else 0
         if price and value > 0 and total_value > 0:
-            allocation_items.append({"code": str(p["code"]), "name": str(name),
-                                     "weight": weight, "value": value})
+            allocation_items.append({"code": str(p["code"]), "name": str(name), "value": value})
         target_pct = target_weights.get(str(p.get("code") or ""))
         if target_pct is None:
             target_line_html = '<div class="position-target-summary"><span>目標權重</span><b>尚未設定</b></div>'
@@ -33237,35 +33339,11 @@ def web_positions(uid):
   <div><div class="total-label">已實現損益</div><div class="total-value num {'up' if _p2_realized_total >= 0 else 'down'}" data-home-sensitive>{_p2_realized_total:+,.0f}</div><div class="total-sub">依正式賣出紀錄統計</div></div>
 </div>""" if positions else ""
 
-    allocation_html = ""
-    if allocation_items:
-        _allocation_colors = ["#2676A5", "#D84B45", "#14916C", "#8165B5",
-                              "#D29430", "#3A8FA3", "#CF6A36", "#6E8498"]
-        _circ = 2 * math.pi * 40
-        _arc_offset = 0.0
-        _arc_html, _legend_html = [], []
-        for _i, _item in enumerate(allocation_items):
-            _color = _allocation_colors[_i % len(_allocation_colors)]
-            _arc_len = _circ * max(0.0, min(100.0, _item["weight"])) / 100.0
-            _code_attr = html.escape(_item["code"], quote=True)
-            _name_text = html.escape(_item["name"])
-            _arc_html.append(
-                f'<circle class="allocation-slice" data-allocation-code="{_code_attr}" '
-                f'cx="50" cy="50" r="40" fill="none" stroke="{_color}" stroke-width="14" '
-                f'stroke-dasharray="{_arc_len:.3f} {_circ:.3f}" '
-                f'stroke-dashoffset="{-_arc_offset:.3f}" transform="rotate(-90 50 50)" '
-                f'tabindex="0" role="button" aria-label="{_name_text}，權重 {_item["weight"]:.1f}%"></circle>')
-            _legend_html.append(
-                f'<button type="button" class="allocation-item" data-allocation-select="{_code_attr}" '
-                f'data-allocation-name="{_name_text}" data-allocation-weight="{_item["weight"]:.4f}" data-allocation-value="{_item["value"]:.2f}" '
-                f'aria-pressed="false"><i style="background:{_color}"></i><span>{_name_text}</span>'
-                f'<b data-home-sensitive>{_item["weight"]:.1f}%</b></button>')
-            _arc_offset += _arc_len
-        allocation_html = f'''<section class="position-allocation" aria-label="持股配置互動圖表">
-  <div class="position-allocation-head"><div><h2>持股配置</h2><small>點選圖表或名稱查看市值與權重</small></div><button type="button" data-allocation-reset>顯示全部</button></div>
-  <div class="position-allocation-body"><div class="position-allocation-visual"><svg viewBox="0 0 100 100" role="img" aria-label="已取得行情的持股市值權重分布">{''.join(_arc_html)}<circle cx="50" cy="50" r="31" fill="#fff" stroke="#eef1f3" stroke-width=".5"/></svg><div class="position-allocation-center"><b data-allocation-center-title>全部持股</b><strong data-allocation-center-weight data-home-sensitive>{sum(x["weight"] for x in allocation_items):.1f}%</strong><small data-allocation-center-value data-home-sensitive>{total_value:,.0f} 元</small></div></div><div class="position-allocation-legend">{''.join(_legend_html)}</div></div>
-  <div class="allocation-selection" aria-live="polite"><span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small></div>
-</section>'''
+    allocation_html = render_position_allocation(
+        allocation_items, total_value, sum(p["shares"] > 0 for p in positions),
+        get_portfolio_cash(uid), reopen=request.method == "POST" and request.form.get("action") == "save_cash")
+    if request.args.get("cash_saved") == "1":
+        msg = "現金餘額已儲存"
 
     # v194：移除組合配置圖；持股頁直接呈現持股明細與組合走勢。
     try:
@@ -33799,6 +33877,15 @@ body #app-page-content .position-allocation-head{display:flex!important;justify-
 body #app-page-content .position-allocation-head h2{margin:0!important;font-size:17px!important;color:#20384B!important}
 body #app-page-content .position-allocation-head small{display:block!important;margin-top:3px!important;color:#7E8D99!important;font-size:10px!important}
 body #app-page-content .position-allocation-head button{border:0!important;border-radius:9px!important;padding:7px 9px!important;background:#EFF3F5!important;color:#4A6578!important;font-size:10px!important;font-weight:800!important;cursor:pointer!important}
+.position-cash{margin:0 0 14px;border:1px solid var(--line,#DCE3E9);border-radius:12px;background:var(--surface,#fff);color:var(--ink,#243647)}
+.position-cash summary{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:10px;list-style:none;padding:11px 12px;cursor:pointer}
+.position-cash summary::-webkit-details-marker{display:none}
+.position-cash summary span:last-child{color:var(--brand,#244D68);font-size:12px;font-weight:800}
+.position-cash form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:0 12px 12px}
+.position-cash form label{grid-column:1/-1;font-size:12px}
+.position-cash input{min-width:0;padding:8px 10px;font-size:16px}
+.position-cash form button{padding:8px 12px;border:0;border-radius:9px;background:var(--brand,#244D68);color:#fff}
+.position-allocation-pending{font-size:12px;margin:8px 0 0;color:var(--muted,#526879)}
 body #app-page-content .position-allocation-body{display:grid!important;grid-template-columns:126px minmax(0,1fr)!important;gap:13px!important;align-items:center!important}
 body #app-page-content .position-allocation-visual{position:relative!important;width:126px!important;height:126px!important}
 body #app-page-content .position-allocation-visual svg{display:block!important;width:100%!important;height:100%!important;overflow:visible!important}
@@ -33827,6 +33914,7 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
   if(window.__positionAllocationBound)return;
   window.__positionAllocationBound=true;
   function setAllocationPrivate(node,text){if(!node)return;node.setAttribute('data-home-sensitive','');node.setAttribute('data-home-original',text);node.textContent=window.__stockbotHomePrivacyMasked===true?'******':text;}
+  function assetValue(value){return Number(value).toLocaleString('zh-TW',{maximumFractionDigits:2})+' 元';}
   function selectAllocation(root,code){
     var button=root.querySelector('[data-allocation-select="'+CSS.escape(code)+'"]');
     var slice=root.querySelector('.allocation-slice[data-allocation-code="'+CSS.escape(code)+'"]');
@@ -33836,17 +33924,24 @@ body #app-page-content .position-card.allocation-focused{background:#F3F8FB!impo
     var title=root.querySelector('[data-allocation-center-title]'),weight=root.querySelector('[data-allocation-center-weight]'),value=root.querySelector('[data-allocation-center-value]');
     if(title)title.textContent=button.dataset.allocationName||code;
     if(weight)setAllocationPrivate(weight,Number(button.dataset.allocationWeight||0).toFixed(1)+'%');
-    if(value)setAllocationPrivate(value,Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元');
+    if(value)setAllocationPrivate(value,assetValue(button.dataset.allocationValue||0));
     var panel=root.querySelector('.allocation-selection');
-    if(panel){panel.innerHTML='<span>已選取持股</span><strong>'+((button.dataset.allocationName||code).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}))+'（'+code+'）</strong><small data-home-sensitive data-home-original="組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元">'+(window.__stockbotHomePrivacyMasked===true?'******':'組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ 市值 '+Math.round(Number(button.dataset.allocationValue||0)).toLocaleString('zh-TW')+' 元')+'</small><button type="button" data-allocation-open="'+code+'">查看持股明細　›</button>';}
+    if(panel){
+      var label=document.createElement('strong'),detail=document.createElement('small'),action=document.createElement('button');
+      label.textContent=code==='cash'?'現金':(button.dataset.allocationName||code)+'（'+code+'）';
+      setAllocationPrivate(detail,'組合占比 '+Number(button.dataset.allocationWeight||0).toFixed(1)+'% ・ '+assetValue(button.dataset.allocationValue||0));
+      action.type='button';action.dataset.allocationOpen=code;action.textContent=code==='cash'?'編輯現金':'查看持股明細　›';
+      panel.replaceChildren(label,detail,action);
+    }
     document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.toggle('allocation-focused',card.dataset.positionCode===code);});
   }
   document.addEventListener('click',function(event){
     var choose=event.target.closest('[data-allocation-select],[data-allocation-code]');
     if(choose){var root=choose.closest('.position-allocation');if(root)selectAllocation(root,choose.dataset.allocationSelect||choose.dataset.allocationCode);return;}
     var reset=event.target.closest('[data-allocation-reset]');
-    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='全部持股';setAllocationPrivate(root.querySelector('[data-allocation-center-weight]'),root.querySelectorAll('.allocation-item').length?Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationWeight||0);},0).toFixed(1)+'%':'0.0%');setAllocationPrivate(root.querySelector('[data-allocation-center-value]'),Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0).toLocaleString('zh-TW')+' 元');root.querySelector('.allocation-selection').innerHTML='<span>組合概覽</span><strong>點選圓環或股票名稱</strong><small>立即查看該持股占比與市值，並可跳到持股明細。</small>';document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
+    if(reset){var root=reset.closest('.position-allocation');if(!root)return;root.querySelectorAll('.allocation-item').forEach(function(x){x.setAttribute('aria-pressed','false');});root.querySelectorAll('.allocation-slice').forEach(function(x){x.classList.remove('is-selected');x.style.opacity='1';});root.querySelector('[data-allocation-center-title]').textContent='總資產';setAllocationPrivate(root.querySelector('[data-allocation-center-weight]'),'100.0%');setAllocationPrivate(root.querySelector('[data-allocation-center-value]'),assetValue(Array.from(root.querySelectorAll('.allocation-item')).reduce(function(s,x){return s+Number(x.dataset.allocationValue||0);},0)));root.querySelector('.allocation-selection').innerHTML='<strong>點選圓環或名稱查看占比</strong>';document.querySelectorAll('#app-page-content .position-card').forEach(function(card){card.classList.remove('allocation-focused');});return;}
     var open=event.target.closest('[data-allocation-open]');
+    if(open&&open.dataset.allocationOpen==='cash'){var editor=document.getElementById('position-cash');if(editor){editor.open=true;editor.querySelector('input[name="portfolio_cash"]').focus();}return;}
     if(open){var card=document.querySelector('.position-card[data-position-code="'+CSS.escape(open.dataset.allocationOpen)+'"]');if(card){var detail=card.querySelector('.position-more');if(detail)detail.open=true;card.scrollIntoView({behavior:(window.StockBotUI&&window.StockBotUI.reducedMotion()?'auto':'smooth'),block:'center'});card.classList.add('allocation-focused');}}
   });
   document.addEventListener('keydown',function(event){if((event.key==='Enter'||event.key===' ')&&event.target.matches('.allocation-slice')){event.preventDefault();var root=event.target.closest('.position-allocation');if(root)selectAllocation(root,event.target.dataset.allocationCode);}});
@@ -54150,10 +54245,10 @@ def _line_async_query(user_id, feature, build_fn, reply_token, base_url=None,
         return False
 
 
-def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
+def _line_hidden_holdings_flex(user_id, positions=None, prices=None, cash_amount=0.0):
     """隱藏指令：依持股比例由高到低顯示配置長條與最近交易日漲幅；不顯示金額。"""
     positions = (merge_positions(get_positions(user_id)) if positions is None else positions)
-    if not positions:
+    if not positions and not cash_amount:
         return FlexSendMessage(alt_text="秉軒持股", contents={"type":"bubble","body":{"type":"box","layout":"vertical","contents":[{"type":"text","text":"目前沒有持股資料","weight":"bold","size":"lg"},{"type":"text","text":"請先在網頁持股頁新增持股。","size":"sm","color":"#667085","wrap":True,"margin":"md"}]}})
     codes=[str(x.get("code") or "").strip() for x in positions if x.get("code")]
     # This is a LINE report on the small single-instance Render service; cap
@@ -54165,17 +54260,18 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
         code=str(pos.get("code") or "").strip(); shares=float(pos.get("shares") or 0); q=prices.get(code) or {}
         try: price=float(q.get("close") or q.get("price") or 0)
         except (TypeError,ValueError): price=0
-        market=price*shares if price>0 else 0
-        if shares > 0 and price > 0:
+        market=price*shares if shares > 0 and 0 < price < float("inf") else 0
+        if market > 0:
             priced_position_count += 1
             total_market += market
         staged.append((pos,price,market,q))
     positive_positions = sum(1 for pos in positions if float(pos.get("shares") or 0) > 0)
-    weights_complete = positive_positions == priced_position_count and total_market > 0
+    total_assets = total_market + (cash_amount or 0)
+    weights_complete = cash_amount is not None and positive_positions == priced_position_count and total_assets > 0
     rows=[]
     for pos,price,market,q in staged:
         code=str(pos.get("code") or "").strip()
-        weight=market/total_market*100 if weights_complete and total_market>0 else None
+        weight=market/total_assets*100 if weights_complete else None
         # 休市時沿用最新交易日的日漲跌，並把資料日期標出來，不冒稱為今日變化。
         today_pct=None
         for key in ("pct","change_pct","pct_change","changePercent","percent","regularMarketChangePercent","today_change_pct","daily_change_pct"):
@@ -54210,6 +54306,8 @@ def _line_hidden_holdings_flex(user_id, positions=None, prices=None):
             except (TypeError, ValueError):
                 pass
         rows.append((name,code,weight,today_pct,quote_note,limit_state,pct_label,pct_date))
+    rows.append(("現金", "cash", cash_amount / total_assets * 100 if weights_complete else None,
+                 None, "", None))
     rows.sort(key=lambda r:(r[2] is not None, r[2] or 0), reverse=True)
     from line_holdings_layout import render_holdings
     contents = render_holdings(rows)
@@ -54315,8 +54413,9 @@ def _line_hidden_combined_portfolio_flex(user_id):
         len(codes) - len(missing_quotes), len(codes)), flush=True)
     print("🧭 LINE 持股報告階段=持股行情完成 已取得=%s/%s 耗時=%.1fs" % (
         sum(1 for code in codes if _has_close(prices.get(code))), len(codes), time.monotonic()-started), flush=True)
-    holdings_msg = _line_hidden_holdings_flex(user_id, positions=positions, prices=prices)
-    report_msg = _line_hidden_operation_report(user_id, positions=positions, price_map=prices)
+    cash_amount = get_portfolio_cash(user_id)
+    holdings_msg = _line_hidden_holdings_flex(user_id, positions=positions, prices=prices, cash_amount=cash_amount)
+    report_msg = _line_hidden_operation_report(user_id, positions=positions, price_map=prices, cash_amount=cash_amount)
     print("🧭 LINE 持股報告階段=日報完成 總耗時=%.1fs" % (time.monotonic()-started), flush=True)
     # line-bot-sdk v3 的 FlexSendMessage.contents 通常是 FlexContainer 物件，
     # 不是 dict。先轉成 JSON dict 再合併；否則 isinstance(dict) 判斷失敗，
@@ -54375,11 +54474,32 @@ def _line_hidden_combined_portfolio_flex(user_id):
     )
 
 
-def _line_hidden_operation_report(user_id, positions=None, price_map=None):
+def _line_hidden_operation_report(user_id, positions=None, price_map=None, cash_amount=0.0):
     """隱藏指令：以網站操作日報下半部為模板，只顯示最近一個交易日，不顯示金額與說明文字；狀態標籤使用合法 Flex box 容器。"""
+    from line_holdings_layout import report_cash
+    positions = merge_positions(get_positions(user_id)) if positions is None else positions
+    price_map = dict(price_map or {})
+    held_value = 0.0
+    weights_complete = cash_amount is not None
+    for position in positions:
+        shares = float(position.get("shares") or 0)
+        if shares <= 0:
+            continue
+        quote = price_map.get(position.get("code")) or {}
+        try:
+            price = float(quote.get("close") or quote.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0
+        if not 0 < price < float("inf"):
+            weights_complete = False
+            break
+        held_value += price * shares
+    total_assets = held_value + (cash_amount or 0) if weights_complete else 0.0
+    cash_row = report_cash(cash_amount / total_assets * 100 if total_assets else
+                           0.0 if weights_complete else None)
     logs = _filter_voided_same_day_logs(get_position_change_logs(user_id, limit=100) or [])
     if not logs:
-        return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
+        return FlexSendMessage(alt_text="秉軒操作日報", contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[{"type":"text","text":"操作日報","size":"xl","weight":"bold","color":"#203449"},cash_row,{"type":"text","text":"目前沒有操作紀錄。","size":"sm","color":"#667085","margin":"md"}]}})
 
     # 日報只取「最近一個確實有有效操作」的日期：若今天沒有任何有效操作，
     # 自動往前找上一個有操作的交易日，不顯示空白的當日區塊，也不硬顯示今天日期。
@@ -54403,14 +54523,13 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
             alt_text="近期操作日報",
             contents={"type":"bubble","size":"mega","body":{"type":"box","layout":"vertical","paddingAll":"16px","contents":[
                 {"type":"text","text":"近期操作日報","size":"xl","weight":"bold","color":"#203449"},
+                cash_row,
                 {"type":"text","text":"目前沒有有效的持股操作紀錄。","size":"sm","color":"#667085","margin":"md","wrap":True}
             ]}}
         )
 
     try:
-        positions = merge_positions(get_positions(user_id)) if positions is None else positions
         codes = sorted({str(x.get("code") or "").strip() for x in positions + logs if x.get("code")})
-        price_map = dict(price_map or {})
         def _has_close(quote):
             try:
                 return isinstance(quote, dict) and float(quote.get("close") or quote.get("price") or 0) > 0
@@ -54420,13 +54539,7 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
         if missing_codes:
             print("⚠️ LINE 操作日報行情快照缺漏 %s 檔；略過逐檔補抓" % (
                 len(missing_codes)), flush=True)
-        held_positions = [x for x in positions if float(x.get("shares") or 0) > 0]
-        all_held_prices_known = all(_has_close(price_map.get(x.get("code"))) for x in held_positions)
-        total_value = (sum(float((price_map.get(x.get("code")) or {}).get("close") or
-                                 (price_map.get(x.get("code")) or {}).get("price") or 0) *
-                            float(x.get("shares") or 0) for x in held_positions)
-                       if all_held_prices_known else 0.0)
-        enriched = enrich_position_change_logs(logs, positions, price_map, total_value)
+        enriched = enrich_position_change_logs(logs, positions, price_map, total_assets)
         # LINE 日報與網頁一致：同一交易日、同一股票的多筆原始操作合併成一列。
         # 例如同一天「新增 +1」和「加碼 +1」合併為「新增」一列，而不是重複顯示。
         merged_by_code = {}
@@ -54481,6 +54594,7 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
     body = [
         {"type":"text","text":"操作日報","size":"xl","weight":"bold","color":navy},
         {"type":"text","text":day_text,"size":"md","weight":"bold","color":"#2D6F9F","margin":"sm"},
+        cash_row,
         {"type":"separator","margin":"md","color":"#E5EAF0"},
         {"type":"box","layout":"horizontal","paddingAll":"9px","backgroundColor":"#F7F9FC","contents":[
             {"type":"text","text":"標的","size":"xs","weight":"bold","color":muted,"flex":3,"wrap":True},
@@ -54513,7 +54627,7 @@ def _line_hidden_operation_report(user_id, positions=None, price_map=None):
             {"type":"text","text":f"{len(group_items)} 檔","size":"sm","weight":"bold","color":muted,"margin":"md","flex":1}
         ]})
         body.append({"type":"separator","color":"#E1E7EE"})
-        for item in group_items:
+        for item in sorted(group_items, key=lambda row: row.get("current_weight") or 0, reverse=True):
             code = str(item.get("code") or "").strip()
             status, _ = _position_change_journal_status(item)
             delta = item.get("shares_delta")
