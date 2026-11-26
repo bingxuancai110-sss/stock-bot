@@ -28772,8 +28772,8 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/app-experience.css?v=20261125-7">
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
-<link rel="stylesheet" href="/static/short-term.css?v=20261126-5">
-<script defer src="/static/short-term.js?v=20261126-5"></script>
+<link rel="stylesheet" href="/static/short-term.css?v=20261126-6">
+<script defer src="/static/short-term.js?v=20261126-6"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">

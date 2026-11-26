@@ -291,12 +291,15 @@ html body#stockbot-app[data-app-view] #stockbot-shell #stockbot-workbench #wb-sh
 #wb-short-term .st-desk-state[data-state=closed]{background:#eeeaf6;color:#584573}
 #wb-short-term .st-desk-state[data-state=unknown]{color:var(--st-muted)}
 #wb-short-term .st-desk-table .st-desk-detail>td{padding:0;text-align:start}
+#wb-short-term .st-desk-detail{overflow-anchor:none}
 #wb-short-term .st-desk-detail .st-detail{padding:12px;min-width:0;border-top:0}
 #wb-short-term .st-momentum-bg{fill:color-mix(in srgb,var(--st-paper),#687e91 9%)}
 #wb-short-term .st-momentum-zero{stroke:var(--st-muted);stroke-width:1;stroke-dasharray:3 3}
 #wb-short-term .st-momentum-up{fill:#c5343b}
 #wb-short-term .st-momentum-down{fill:#13805f}
 #wb-short-term .st-chart-unavailable{padding:1em;color:var(--st-muted)}
+#wb-short-term .st-trend-label{font-weight:750}
+#wb-short-term .st-pattern-extension{opacity:.88}
 @media(hover:hover){#wb-short-term .st-desk-row:hover{background:color-mix(in srgb,var(--st-paper),#368397 9%)}}
 @media(max-width:520px){
   #wb-short-term .st-desk-table{font-size:11px}

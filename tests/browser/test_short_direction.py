@@ -15,10 +15,18 @@ with patch.object(ss,'setup',side_effect=controlled):row=ss.analyse('2330','隔�
 row['signals']=st.signal_allocations(row['signals'])
 for e in row['signals']:e['allocation']['label']={'entry':'首次放空100%','add':'加空首次股數50%'}[e['type']]
 row['spreads']=st.trade_spreads(row['signals'],row['price'],row['date'],direction='short')
+chart_low=min(bar['low'] for bar in b[-30:])
+chart_span=max(bar['high'] for bar in b[-30:])-chart_low
+row['pattern_line']=dict(start_date=b[-15]['date'],end_date=b[-1]['date'],
+                         start_price=chart_low+.40*chart_span,end_price=chart_low+.55*chart_span)
+second=dict(row,code='2308',name='展開位置測試',
+            pattern_line=dict(row['pattern_line'],start_price=chart_low+.62*chart_span,
+                              end_price=chart_low+.46*chart_span))
 with sync_playwright() as p:
  for engine in ('chromium','webkit'):
   browser=getattr(p,engine).launch();page=browser.new_page(viewport={'width':390,'height':844},is_mobile=True,has_touch=True);errors=[];directions=[];queries=[];held_count=[2];available=[True]
   page.on('pageerror',lambda e:errors.append(str(e)))
+  show_second=[False]
   def route(r):
    u=urlparse(r.request.url)
    if u.path.startswith('/static/'):
@@ -29,7 +37,10 @@ with sync_playwright() as p:
     q=parse_qs(u.query);queries.append(q);d=q.get('direction',['long'])[0];directions.append(d)
     summary={key:row[key] for key in ('code','name','date','price','current_action','latest_event','provisional')}
     summary.update(position_group='held',trade=row['spreads']['open'])
-    response=dict(ok=True,row=row) if q.get('code') else dict(ok=True,rows=[summary] if d=='short' else [],alerts=[],meta=dict(direction=d,signals_current=True,date=row['date'],limit=40,total=1 if d=='short' else 0,position_counts=dict(held=held_count[0],waiting=0,closed=0)))
+    shown=[summary] if d=='short' else []
+    if shown and show_second[0]:
+     shown.append(dict(summary,code=second['code'],name=second['name']))
+    response=dict(ok=True,row=second if q.get('code')==['2308'] else row) if q.get('code') else dict(ok=True,rows=shown,alerts=[],meta=dict(direction=d,signals_current=True,date=row['date'],limit=40,total=len(shown),position_counts=dict(held=held_count[0],waiting=0,closed=0)))
     r.fulfill(body=json.dumps(response,ensure_ascii=False),content_type='application/json');return
    r.fulfill(body='<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/short-term.css"></head><body><div id="wb-status"></div><section id="wb-short-term"></section><script src="/static/short-term.js"></script></body></html>',content_type='text/html')
   page.route('https://fixture.test/**',route);page.goto('https://fixture.test/web/workbench');page.locator('[data-direction="short"]').click();page.locator('.st-desk-row').wait_for()
@@ -44,6 +55,8 @@ with sync_playwright() as p:
   assert page.locator('.st-desk-row td').nth(2).inner_text()==entry_text, 'metadata refresh overwrote entry price with position count'
   page.locator('.st-desk-open').click();page.locator('.st-chart svg').wait_for()
   assert queries[-1]['code']==['2330'] and page.locator('.st-momentum-bar').count()>0
+  assert '上升趨勢線' in page.locator('.st-trend-label').text_content()
+  assert page.locator('.st-pattern-extension').count()==1
   assert '▼ 放空／加空' in page.locator('.st-detail').inner_text()
   assert '未核實' in page.locator('.st-source').inner_text()
   assert '初始1R' in page.locator('.st-inspector').inner_text()
@@ -65,4 +78,20 @@ with sync_playwright() as p:
   assert directions[-1]=='long' and queries[-1]['sort']==['price_desc'] and queries[-1]['price_range']==['1000plus'] and not errors,errors
   page.reload();page.locator('.st-desk-filters summary').click()
   assert page.locator('.st-price-sort').input_value()=='price_desc' and page.locator('.st-price-filter').input_value()=='1000plus'
+  show_second[0]=True
+  page.locator('[data-direction="short"]').click()
+  page.locator('.st-desk-row[data-code="2330"] button').click()
+  page.locator('.st-chart svg').wait_for()
+  lower=page.locator('.st-desk-row[data-code="2308"]')
+  lower.evaluate('el=>window.scrollBy(0,el.getBoundingClientRect().top-580)')
+  box=lower.bounding_box()
+  assert 415 < box['y'] < 720
+  page.touchscreen.tap(box['x']+20,box['y']+20)
+  page.locator('.st-desk-detail[data-code="2308"] .st-chart svg').wait_for()
+  assert abs(lower.bounding_box()['y']-box['y'])<=3, 'Opening a lower row moved it'
+  assert lower.evaluate("e=>e.nextElementSibling.dataset.code==='2308'")
+  assert '下降趨勢線' in page.locator('.st-trend-label').text_content()
+  assert page.locator('.st-pattern-extension').evaluate(
+      "el=>Number(el.getAttribute('x2'))>Number(el.getAttribute('x1'))")
+  assert not errors,errors
   print(engine+': short/long switch, labels, arrows, evidence, spread, layout and reset passed',flush=True);browser.close()
