@@ -7,6 +7,19 @@
  function esc(v){return String(v==null?'—':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
  function num(v){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('zh-TW',{maximumFractionDigits:2});}
  function price(v){return v==null||!Number.isFinite(Number(v))?'—':Number(v).toLocaleString('zh-TW',{minimumFractionDigits:2,maximumFractionDigits:2});}
+ var taipeiTime=new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+ function signalTime(value){
+  var timestamp=Date.parse(value);
+  return Number.isFinite(timestamp)?taipeiTime.format(timestamp):'未記錄';
+ }
+ function notificationDetails(event){
+  var signal=Number(event.price),latest=Number(event.latest_price),delta=(latest/signal-1)*100;
+  var movement=signal>0&&latest>0&&Number.isFinite(delta)
+   ? ' → 最近掃描 '+price(latest)+'（'+(delta>0?'+':'')+num(delta)+'%）' : '';
+  return '<span>首次訊號價 '+price(event.price)+esc(movement)+'</span>'+
+   '<span>訊號行情 '+esc(signalTime(event.signal_quote_at))+' · 首次偵測 '+esc(signalTime(event.observed_at))+'</span>'+
+   (movement&&event.latest_quote_at?'<span>最近掃描行情 '+esc(signalTime(event.latest_quote_at))+'</span>':'');
+ }
  function sizing(e){var a=e&&e.allocation;if(!a)return '';return '<span class="st-sizing"><strong>'+esc(a.label)+'</strong><span>部位 '+num(a.before_pct)+'% → '+num(a.after_pct)+'%（首次股數為100%）</span></span>';}
  function currentSizing(r){if(r.current_action==='unconfirmed'||!r.latest_event)return '';return sizing((r.signals||[]).filter(function(e){return e.date===r.date&&e.type===r.latest_event;}).slice(-1)[0]);}
  function spreadText(v){if(v==null||!Number.isFinite(Number(v)))return '價差未確認';return Number(v)>0?'每股賺 NT$'+price(v):Number(v)<0?'每股賠 NT$'+price(-v):'每股價差 NT$0.00';}
@@ -74,7 +87,7 @@
   banner.id='st-live-banner';
   banner.innerHTML='<button type="button" class="st-live-banner-main"><span role="status"><strong>短線有新動作</strong><span>'+
    esc(event.name)+' '+esc(event.code)+' · '+esc(action)+' · 盤中暫定'+
-   (fresh.length>1?' · 另 '+(fresh.length-1)+' 筆':'')+'</span></span></button>'+
+   (fresh.length>1?' · 另 '+(fresh.length-1)+' 筆':'')+'</span>'+notificationDetails(event)+'</span></button>'+
    '<button type="button" class="st-live-banner-close" aria-label="關閉短線通知">×</button>';
   banner.querySelector('.st-live-banner-close').onclick=dismissActionBanner;
   banner.querySelector('.st-live-banner-main').onclick=function(){
@@ -92,10 +105,13 @@
  function notices(s){
   var meta=s.data.meta||{},date=meta.date||'未確認',valid=meta.signals_current===true;
   var alerts=valid?(s.data.alerts||[]):[],entries=alerts.filter(function(e){return e.type==='entry';});
+  var direction=meta.direction||s.direction, liveByAction=new Map((s.data.notifications||[]).filter(function(event){
+   return event.direction===direction;
+  }).map(function(event){return [event.code+'|'+event.type,event];}));
   var counts=meta.stage_counts||{watch:(s.data.rows||[]).filter(function(r){return !r.entry_ready;}).length,triggered:0,entry:entries.length};
   var title=!valid?'最新訊號尚未確認':'觀察 '+(counts.watch||0)+' · 型態觸發 '+(counts.triggered||0)+' · '+(meta.intraday?'盤中進場 ':'今日進場 ')+(counts.entry||entries.length||0);
   var body=!valid?'<p>'+esc(meta.building?'正在更新；舊紀錄不作為新的進場提示。':meta.date?'資料截至 '+date+'，尚未確認 '+(meta.expected_date||'最新交易日')+' 的訊號。':'尚未取得可顯示的短線快照。')+'</p>':'';
-  if(valid&&alerts.length){var renderAlert=function(e){return '<div class="st-notice-event" data-kind="'+esc(e.type)+'"><b>'+esc(e.name)+' '+esc(e.code)+'｜'+esc((e.provisional?'盤中暫定 · ':'')+(e.type==='entry'?'新'+names[e.type]:names[e.type]))+'</b><span>'+esc(e.date)+' · 訊號價 '+price(e.price)+'</span>'+sizing(e)+'<span>硬停損 '+price(e.stop)+'　停利參考 '+price(e.target)+'</span>'+(e.type==='exit'&&e.spread!=null?'<strong class="'+spreadClass(e.spread)+'">'+spreadText(e.spread)+'</strong>':'')+'</div>';};body+=alerts.slice(0,6).map(renderAlert).join('');if(alerts.length>6)body+='<details><summary>其餘 '+(alerts.length-6)+' 筆新訊號</summary>'+alerts.slice(6).map(renderAlert).join('')+'</details>';body+='<p>'+(meta.intraday?'盤中暫定訊號可能消失，不代表已收盤確認或可按該價格成交。':'下一交易日須重新確認價格與停損距離，不代表可按訊號價直接成交。')+'</p>';}
+  if(valid&&alerts.length){var renderAlert=function(e){return '<div class="st-notice-event" data-kind="'+esc(e.type)+'"><b>'+esc(e.name)+' '+esc(e.code)+'｜'+esc((e.provisional?'盤中暫定 · ':'')+(e.type==='entry'?'新'+names[e.type]:names[e.type]))+'</b><span>'+esc(e.date)+' · 訊號價 '+price(e.price)+'</span>'+(e.provisional&&liveByAction.has(e.code+'|'+e.type)?notificationDetails(liveByAction.get(e.code+'|'+e.type)):'')+sizing(e)+'<span>硬停損 '+price(e.stop)+'　停利參考 '+price(e.target)+'</span>'+(e.type==='exit'&&e.spread!=null?'<strong class="'+spreadClass(e.spread)+'">'+spreadText(e.spread)+'</strong>':'')+'</div>';};body+=alerts.slice(0,6).map(renderAlert).join('');if(alerts.length>6)body+='<details><summary>其餘 '+(alerts.length-6)+' 筆新訊號</summary>'+alerts.slice(6).map(renderAlert).join('')+'</details>';body+='<p>'+(meta.intraday?'盤中暫定訊號可能消失，不代表已收盤確認或可按該價格成交。':'下一交易日須重新確認價格與停損距離，不代表可按訊號價直接成交。')+'</p>';}
   var observations=valid?(s.data.observations||[]):[];if(observations.length)body+='<p>今日新增型態觀察 '+observations.length+' 檔 · '+observations.slice(0,3).map(function(r){return esc(r.name);}).join('、')+(observations.length>3?'…':'')+'</p>';
   if(valid&&meta.recent_signals){var recent=meta.recent_signals;body+='<details class="st-recent-signals"><summary>最近30根日K：'+num(recent.entries||0)+' 次進場 · '+num(recent.exits||0)+' 次'+(s.direction==='short'?'回補':'出場')+'</summary><p>範圍：目前篩選的已保存候選，不是全市場績效。策略在場 '+num(recent.active||0)+' 檔；最近進場 '+esc(recent.last_entry_date||'尚無')+'。頂部「今日進場」只計本次資料日。</p></details>';}
   if(valid&&meta.failed)body+='<p>另有 '+num(meta.failed)+' 檔資料待確認。</p>';
