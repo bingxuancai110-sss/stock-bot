@@ -44,9 +44,9 @@ def compact_chart(row):
 
 def position_group(row):
     """Confirmed model state; an unfinished entry/exit cannot change this state."""
-    if row.get('current_action')=='unconfirmed':return 'unknown'
     confirmed=[e for e in row.get('signals',[]) if not e.get('provisional') and e.get('type') in ('entry','exit')]
     if confirmed:return 'held' if confirmed[-1]['type']=='entry' else 'closed'
+    if row.get('current_action')=='unconfirmed':return 'unknown'
     return 'held' if row.get('active') and not row.get('provisional') else 'waiting'
 
 
@@ -58,14 +58,14 @@ def display_price(row):
     return number((row.get('display_quote') or {}).get('price', row.get('price')))
 
 
-def live_quote_timestamp(live, now):
+def live_quote_timestamp(live, now, max_age_seconds=INTRADAY_STALE_SECONDS):
     if not live or live.get('final') or live.get('date') != day(now):
         return None
     try:
         stamp = datetime.fromisoformat(f"{live['date']}T{live['time']}").replace(tzinfo=now.tzinfo)
     except (KeyError, TypeError, ValueError):
         return None
-    return stamp if -60 <= (now - stamp).total_seconds() <= INTRADAY_STALE_SECONDS else None
+    return stamp if -60 <= (now - stamp).total_seconds() <= max_age_seconds else None
 
 
 def with_official_live_bar(history, live, now):
@@ -1072,8 +1072,8 @@ class ShortTermService:
                 stop = number(row.get('stop'))
                 crossed_stop = fresh and active and stop and stop > 0 and (
                     price >= stop if group == 'short_rows' else price <= stop)
-                if active or distance <= .02:
-                    priority = 0 if crossed_stop else 1 if active and distance <= .02 else 2 if distance <= .02 else 3
+                if active or distance <= .02 or fresh:
+                    priority = 0 if crossed_stop else 1 if active and distance <= .02 else 2 if distance <= .02 else 3 if active else 4
                     rank = (priority, checked, distance, code)
                     if code not in ranks or rank < ranks[code]:
                         ranks[code] = rank
@@ -1269,8 +1269,17 @@ class ShortTermService:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
             official = {}
             if codes and intraday and self.market_quotes:
+                now = self.now()
+                with self.lock:
+                    if self.card_quote_session == session:
+                        official = {code: self.card_quotes[code] for code in codes
+                                    if live_quote_timestamp(self.card_quotes.get(code), now, max_age_seconds=90)
+                                    and self.card_quotes[code].get('open') is not None
+                                    and self.card_quotes[code].get('volume') is not None}
+                missing = [code for code in codes if code not in official]
                 try:
-                    official = self.market_quotes(codes, self.stock_meta, intraday) or {}
+                    if missing:
+                        official.update(self.market_quotes(missing, self.stock_meta, intraday) or {})
                 except Exception as exc:
                     print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
             pause='';time_exhausted=False;live_observed=0
@@ -1466,7 +1475,7 @@ class ShortTermService:
                 if self.calendar(expected):break
                 expected-=timedelta(days=1)
             quote_session = (day(expected), intraday)
-            if cached and not quote_only and code is None and expected == self.now().date() and (intraday or self.now().hour >= 14):
+            if cached and code is None and (not quote_only or intraday) and expected == self.now().date() and (intraday or self.now().hour >= 14):
                 self.queue_card_quotes(cached, quote_session)
             stale=((age>600 if intraday else (cached or {}).get('date')!=day(expected)) or
                    (cached or {}).get('selection_version')!=SELECTION_VERSION)
@@ -1500,10 +1509,12 @@ class ShortTermService:
                 row = dict(row)
                 market_quote = row.pop('market_quote', None) or {}
                 if self.card_quote_session == quote_session:
-                    market_quote = self.card_quotes.get(row['code'], market_quote)
-                if (market_quote.get('date', '') >= (row.get('date') or '') and
-                        (not intraday or (market_quote.get('date') == day(expected) and
-                                          not market_quote.get('final')))):
+                    display_cached = self.card_quotes.get(row['code']) or {}
+                    if (display_cached.get('date') or '', display_cached.get('time') or '') >= (
+                            market_quote.get('date') or '', market_quote.get('time') or ''):
+                        market_quote = display_cached
+                quote_fresh = bool(intraday and live_quote_timestamp(market_quote, self.now()))
+                if quote_fresh or (not intraday and market_quote.get('date', '') >= (row.get('date') or '')):
                     row['display_quote'] = market_quote
                 else:
                     row['display_quote'] = {}
@@ -1512,8 +1523,10 @@ class ShortTermService:
                 if signals_current and row.get('date')==day(expected) and (not intraday or -60<=quote_age<=1200):
                     rows.append(row)
                 else:
-                    rows.append(dict(row,state='資料待更新，非最新訊號',current_action='unconfirmed',
-                        action_note='行情截至 '+str(row.get('date') or '未確認')+'；尚未確認最新交易日的訊號，不沿用舊買點。',
+                    pending = 'quote_only' if quote_fresh else 'waiting'
+                    rows.append(dict(row,state='策略待重算' if quote_fresh else '等待新行情及策略重算',
+                        current_action='unconfirmed', freshness=pending,
+                        action_note='策略資料截至 '+str(row.get('date') or '未確認')+'；上次確認部位供回查，最新訊號尚未確認。',
                         entry_ready=False,latest_event=None,latest_event_date=None,signal_stage='unconfirmed'))
             # Only the selected page and alert rows need expanded trade histories.
             # Filtering and counts can use the same immutable raw signals.
@@ -1561,6 +1574,8 @@ class ShortTermService:
                 rows=[r for r in rows if display_price(r) is not None and lo<=display_price(r)<hi]
                 alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
             position_counts={g:sum(position_group(r)==g for r in rows) for g in ('held','waiting','closed','unknown')}
+            freshness_counts={g:sum(r.get('freshness')==g for r in rows) for g in ('quote_only','waiting')}
+            freshness_counts['checked']=len(rows)-sum(freshness_counts.values())
             for row in rows:row['position_group']=position_group(row)
             if position in position_counts:rows=[r for r in rows if r['position_group']==position]
             if sector in ('電子','非電子'):alerts=[a for a in alerts if any(r['code']==a['code'] for r in rows)]
@@ -1634,7 +1649,7 @@ class ShortTermService:
                     last = completed[-1] if completed else None
                     opened = spreads['open']
                     fields = ('code', 'name', 'date', 'price', 'change_pct', 'display_quote', 'position_group',
-                              'current_action', 'latest_event', 'provisional', 'signal_stage')
+                              'current_action', 'latest_event', 'provisional', 'signal_stage', 'freshness')
                     card = {field: row.get(field) for field in fields}
                     if row.get('current_action') != 'unconfirmed':
                         card['momentum_candidate'] = row.get('momentum_candidate')
@@ -1655,7 +1670,7 @@ class ShortTermService:
                 notifications=notifications,meta=dict(
                 price_range=price_range,sort=sort,direction=direction,direction_counts={'long':len((cached or {}).get('all_rows',[])),'short':len((cached or {}).get('short_rows',[]))},total=total,offset=offset,limit=limit,has_more=offset+limit<total,
                 recent_signals=recent,stage_counts=stages,
-                position_counts=position_counts,
+                position_counts=position_counts,freshness_counts=freshness_counts,
                 intraday=intraday,refresh_interval_seconds=600,
                 next_refresh_at=(datetime.fromisoformat(generated)+timedelta(seconds=600)).isoformat() if generated and intraday else None,
                 memory_retry_at=(self.memory_retry_at.isoformat()
