@@ -159,14 +159,29 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
     counts = {key: min(len(feed), 120) for key, feed in feeds.items()}
     counts["all"] = sum(counts.values())
     tabs = "".join(
-        '<a href="/web/notifications?kind={}"{}>{}<small>{}</small></a>'.format(
-            key, ' aria-current="page"' if key == category else "",
+        '<a href="/web/notifications?kind={}" data-notice-tab="{}" data-haptic="none"{}>{}<small>{}</small></a>'.format(
+            key, key, ' aria-current="page"' if key == category else "",
             label, "—" if key in unavailable else counts.get(key, 0))
         for key, label in labels.items()
     )
-    events = [(day, kind, event) for kind, feed in feeds.items() if category in ("all", kind)
+    events = [(day, kind, event) for kind, feed in feeds.items()
               for day, event in feed]
     events.sort(key=lambda row: (row[0], row[2].get("observed_at") or ""), reverse=True)
+    panels = "".join(
+        render_panel(kind, [row for row in events if kind == "all" or row[1] == kind],
+                     labels, unavailable, history_ready, page if kind == category else 1,
+                     visible=kind == category)
+        for kind in labels
+    )
+    return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台">
+      <div class="notice-center-head"><div><strong>最近 14 天</strong><small data-notice-count aria-live="polite">本分類 {counts.get(category, 0)} 筆</small></div>
+      <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div>
+      <nav class="notice-center-tabs" aria-label="通知分類">{tabs}</nav>
+      {panels}
+    </section>'''
+
+
+def render_panel(category, events, labels, unavailable, history_ready, page, visible):
     page_size = 30
     pages = max(1, (len(events) + page_size - 1) // page_size)
     page = min(page, pages)
@@ -201,8 +216,9 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
         cards.append(f'<article data-kind="{kind}"><div class="notice-card-meta"><b>{escape(badge)}</b>'
                      f'<small>{escape(summary)}</small></div><h3>{escape(title)}</h3>{detail}{link}</article>')
     notes = []
-    if unavailable:
-        missing = "、".join(labels[key] for key in unavailable)
+    relevant_errors = [key for key in unavailable if category in ("all", key)]
+    if relevant_errors:
+        missing = "、".join(labels[key] for key in relevant_errors)
         notes.append(f'{missing}暫時讀取失敗，可重新整理。')
     if not history_ready and category in ("all", "short"):
         notes.append('短線歷史快照暫未補讀，可重新整理。')
@@ -220,14 +236,9 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
             if 1 <= number <= pages:
                 links.append(f'<a href="/web/notifications?kind={category}&amp;page={number}">{caption}</a>')
         pagination = f'<nav class="notice-pagination" aria-label="通知分頁">第 {page} / {pages} 頁 {"".join(links)}</nav>'
-    return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台">
-      <div class="notice-center-head"><div><strong>最近 14 天</strong><small>本分類 {len(events)} 筆</small></div>
-      <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div>
-      <nav class="notice-center-tabs" aria-label="通知分類">{tabs}</nav>
-      {source_link}{status}
-      {''.join(cards)}
-      {pagination}
-    </section>'''
+    hidden = "" if visible else " hidden"
+    return (f'<div data-notice-panel="{category}" data-count="{len(events)}" data-page="{page}"{hidden}>'
+            f'{source_link}{status}{"".join(cards)}{pagination}</div>')
 
 
 HEADER_CSS = """
@@ -264,7 +275,23 @@ CENTER_CSS = """
 .notice-center-head strong{font-size:1rem}
 .notice-refresh{padding:11px 13px;border:1px solid var(--ui-line,#d3dee5);border-radius:12px;
   background:var(--ui-surface,#fff);text-decoration:none}
-.notice-center-tabs a[aria-current=page]{background:var(--ui-ink,#18374a);color:var(--ui-surface,#fff)}
+.notice-center [data-notice-panel][hidden]{display:none!important}
+html body#stockbot-app #app-page-content .notice-center-tabs a[data-notice-tab]{
+  background:transparent!important;color:var(--ui-ink,#18374a)!important;
+  -webkit-text-fill-color:currentColor!important;-webkit-tap-highlight-color:transparent;
+  box-shadow:none!important;border-color:transparent!important;filter:none!important;
+  touch-action:manipulation
+}
+html body#stockbot-app #app-page-content .notice-center-tabs a[data-notice-tab][aria-current=page]{
+  background:var(--ui-ink,#18374a)!important;color:var(--ui-surface,#fff)!important
+}
+html body#stockbot-app #app-page-content .notice-center-tabs a[data-notice-tab] small{
+  color:inherit!important;-webkit-text-fill-color:currentColor!important;opacity:.86
+}
+html body#stockbot-app #app-page-content .notice-center-tabs a[data-notice-tab]:active{
+  box-shadow:inset 0 0 0 2px currentColor!important
+}
+.notice-center-tabs a:focus-visible{outline:2px solid currentColor;outline-offset:-3px}
 .notice-center h2{margin:20px 0 8px;padding-inline:3px}
 .notice-center article,.notice-center-empty{margin:0 0 8px;padding:14px 16px;border-radius:15px;
   background:var(--ui-surface,#fff);border:1px solid var(--ui-line,#d3dee5)}
