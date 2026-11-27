@@ -57,6 +57,16 @@ html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-rada
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-section-head{gap:14px!important;margin-bottom:16px!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-market-switch{display:flex!important;width:100%!important;box-sizing:border-box!important;margin-bottom:12px!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-market-switch button{flex:1!important}
+html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content :is(#rankTabs,#us-radar .us-market-switch,#us-radar .us-trend-periods) button{
+  -webkit-tap-highlight-color:transparent;min-height:44px!important;-webkit-text-fill-color:currentColor!important
+}
+html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content :is(#rankTabs,#us-radar .us-market-switch,#us-radar .us-trend-periods) button[aria-pressed=true]{
+  background:var(--ui-ink,#18374a)!important;color:var(--ui-surface,#fff)!important;border-color:transparent!important
+}
+html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content :is(#rankTabs,#us-radar .us-market-switch,#us-radar .us-trend-periods) button:active{
+  box-shadow:inset 0 0 0 2px currentColor!important
+}
+#us-radar [data-us-refresh]{min-height:44px;flex:none;white-space:nowrap}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-alert-card{padding:16px!important;border-radius:14px!important;min-width:0!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-alert-card:not(.signal-on):not(.confirm-on){background:var(--suite-soft)!important;border:1px solid var(--sb-app-line)!important}
 html body#stockbot-app[data-app-view] #stockbot-shell #app-page-content #us-radar .us-alert-value{font-size:30px!important;line-height:1.3!important;font-variant-numeric:tabular-nums!important;margin:14px 0 10px!important}
