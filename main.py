@@ -27047,10 +27047,12 @@ def render_page(title, body, nav_active=None, user_name=None):
                 '<path fill="#EA4335" d="M24 12.1c3 0 5.7 1 7.8 3.1l5.8-5.8C34.1 6.1 29.5 4 24 4A20 20 0 0 0 5.8 15.1l6.8 5.3c1.6-4.8 6.1-8.3 11.4-8.3z"/>'
                 '</svg></a>'
             )
-    from notification_center import BELL, HEADER_CSS
+    from notification_center import BELL, HEADER_CSS, notification_scope
     if header_user and title != "登入台股 BOT":
         notice_link = preserve_web_token(
-            f'<a class="app-notice-link" href="/web/notifications" aria-label="通知台" title="通知台">{BELL}</a>')
+            f'<a class="app-notice-link" href="/web/notifications" data-app-nav="1" '
+            f'data-notice-scope="{notification_scope(header_user)}" aria-label="通知台" title="通知台">'
+            f'{BELL}<span class="app-notice-dot" aria-hidden="true" hidden></span></a>')
         header_google_button = ('<div class="app-header-actions" role="group" aria-label="帳號與通知">'
                                 + preserve_web_token(header_google_button) + notice_link + '</div>')
         page_extra_css += HEADER_CSS
@@ -28781,10 +28783,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261126-8">
 <script defer src="/static/short-term.js?v=20261127-1"></script>
-<script defer src="/static/notification-center.js?v=1"></script>
+<script defer src="/static/notification-center.js?v=2"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
-<link rel="stylesheet" href="/static/app-polish.css?v=20261117-1">
+<link rel="stylesheet" href="/static/app-polish.css?v=20261127-2">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261122-1"></script>
 <script defer src="/static/position-allocation.js?v=20261126-3"></script>
@@ -29040,6 +29042,36 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var preloadedPages = new Map(), preloadAttempted = new Set();
   var preloadedData = new Map();
   var preloadTimer = 0, preloadJob = null;
+  var noticePreload = null, noticeFetchedAt = -Infinity;
+  function preloadNotifications() {{
+    var bell = document.querySelector('.app-notice-link[data-notice-scope]');
+    if (!bell || document.hidden || location.pathname !== '/web/portfolio' ||
+        noticePreload || performance.now() - noticeFetchedAt < 55000) return;
+    var href = new URL(bell.href);
+    var key = appViewKey(href.href);
+    href.searchParams.set('fragment', '1');
+    var controller = new AbortController();
+    var timer = setTimeout(function() {{ controller.abort(); }}, 12000);
+    noticeFetchedAt = performance.now();
+    var job = {{key:key, result:fetch(href, {{
+      credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal
+    }}).then(function(response) {{
+      return response.ok && !response.redirected ? response.text() : '';
+    }}).then(function(fragment) {{
+      if (!fragment.includes('data-notice-ids=') || controller.signal.aborted) return '';
+      preloadedPages.set(key, {{fragment:fragment, expiresAt:performance.now() + 180000}});
+      if (window.StockBotNotifications) window.StockBotNotifications.preview(fragment);
+      return fragment;
+    }}).catch(function() {{ return ''; }}).finally(function() {{
+      clearTimeout(timer);
+      if (noticePreload === job) noticePreload = null;
+    }})}};
+    noticePreload = job;
+  }}
+  document.addEventListener('DOMContentLoaded', preloadNotifications, {{once:true}});
+  document.addEventListener('stockbot:pagecontentready', preloadNotifications);
+  document.addEventListener('visibilitychange', preloadNotifications);
+  setInterval(preloadNotifications, 60000);
   var preloadTargets = {{
     '/web/positions': 'id="portfolio-v2"', '/web/market': 'id="market-page"',
     '/web/leaderboard': 'id="rankTabs"', '/web/us-rotation': 'id="us-radar"',
@@ -29337,6 +29369,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     preloadedPages.clear();
     preloadedData.clear();
     preloadAttempted.clear();
+    noticeFetchedAt = -Infinity;
   }}
   document.addEventListener('stockbot:pagecontentready', schedulePagePreload);
   document.addEventListener('stockbot:shorttermactive', stopPagePreload);
@@ -29361,6 +29394,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if (savedPage && !warmFragment) preloadedPages.delete(key);
     var inFlight = sameOrigin && preloadJob && preloadJob.key === key &&
         !preloadJob.controller.signal.aborted ? preloadJob.result : null;
+    if (sameOrigin && noticePreload && noticePreload.key === key) inFlight = noticePreload.result;
     window.clearTimeout(preloadTimer);
     preloadTimer = 0;
     if (preloadJob && !warmFragment && !inFlight) {{

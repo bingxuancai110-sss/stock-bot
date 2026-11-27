@@ -1,6 +1,7 @@
 """Persist short-term alerts and render saved market and personal changes."""
 from datetime import timedelta
 from contextlib import closing
+from hashlib import sha256
 from html import escape
 import json
 import threading
@@ -30,6 +31,23 @@ _history_cache = None
 BELL = ('<svg viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="currentColor" '
         'stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
         '<path d="M18 8a6 6 0 0 0-12 0c0 7-2 7-2 9h16c0-2-2-2-2-9M10 21h4"/></svg>')
+
+
+def notification_scope(uid):
+    return sha256(f"stockbot-notices:{uid}".encode()).hexdigest()[:24]
+
+
+def notification_ids(events):
+    ids = []
+    for day, kind, event in events:
+        if event.get("recovered"):
+            continue
+        if kind == "short":
+            identity = (day, kind, event["direction"], event["code"], event["type"], event["provisional"])
+        else:
+            identity = (day, kind, event["title"], event.get("detail"))
+        ids.append(sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:20])
+    return " ".join(dict.fromkeys(ids))
 
 
 def save_short_events(connect, snapshot, today):
@@ -173,7 +191,7 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
                      visible=kind == category)
         for kind in labels
     )
-    return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台">
+    return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台" data-notice-ids="{notification_ids(events)}">
       <div class="notice-center-head"><div><strong>最近 14 天</strong><small data-notice-count aria-live="polite">本分類 {counts.get(category, 0)} 筆</small></div>
       <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div>
       <nav class="notice-center-tabs" aria-label="通知分類">{tabs}</nav>
@@ -243,7 +261,7 @@ def render_panel(category, events, labels, unavailable, history_ready, page, vis
 
 HEADER_CSS = """
 html body#stockbot-app #stockbot-shell > .wrap > .app-header > .app-header-actions{
-  grid-area:account;align-self:center;justify-self:end;display:flex;align-items:center;
+  position:relative;grid-area:account;align-self:center;justify-self:end;display:flex;align-items:center;
   height:46px;border:1px solid var(--ui-line,#d3dee5);border-radius:24px;
   background:var(--ui-surface,#fff);box-sizing:border-box
 }
@@ -258,6 +276,9 @@ html body#stockbot-app #stockbot-shell > .wrap > .app-header > .app-header-actio
 }
 .app-header-actions .app-account-link::after,.app-header-actions .app-account-link span{display:none!important}
 .app-header-actions a:focus-visible{outline:2px solid currentColor;outline-offset:-3px}
+.app-notice-link .app-notice-dot{position:absolute;top:8px;right:7px;width:9px;height:9px;
+  border-radius:50%;background:#d02139;box-shadow:0 0 0 2px var(--ui-surface,#fff);pointer-events:none}
+.app-notice-link .app-notice-dot[hidden]{display:none!important}
 """
 
 CENTER_CSS = """
