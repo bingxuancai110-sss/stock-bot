@@ -55,6 +55,15 @@ def price_band(price):
     return '1000以上' if price>=1000 else '500–999' if price>=500 else '100–499' if price>=100 else '低於100'
 
 
+def market_suffix(value):
+    market = str(value or '').strip().lower()
+    if market in ('上櫃', '上柜', 'tpex', 'otc', 'two', '.two') or market.startswith(('上櫃', '上柜')):
+        return '.TWO'
+    if market in ('上市', 'twse', 'tse', 'listed', 'tw', '.tw', '集中市場') or market.startswith('上市'):
+        return '.TW'
+    return None
+
+
 def display_price(row):
     return number((row.get('display_quote') or {}).get('price', row.get('price')))
 
@@ -866,13 +875,14 @@ class ShortTermService:
     def __init__(self, *, connect, store, quote, executor, safe, now, equity,
                  calendar=None, light=None, category=None, memory_reserve_mb=40,
                  market_quotes=None, background_slot=None, close_batch_lease=None,
-                 close_startup_grace=0, save_alerts=None):
+                 close_startup_grace=0, save_alerts=None, scan_market_quotes=None):
         self.connect=connect; self.store=store; self.quote=quote; self.executor=executor
         self.safe=safe; self.now=now; self.equity=equity
         self.memory_reserve_mb=max(24,int(memory_reserve_mb))
         self.calendar=calendar or (lambda d:d.weekday()<5)
         self.light=light;self.category=category or (lambda code,industry:'未分類')
         self.market_quotes = market_quotes
+        self.scan_market_quotes = scan_market_quotes or market_quotes
         self.background_slot = background_slot
         self.close_batch_lease = close_batch_lease
         self.save_alerts = save_alerts
@@ -1316,7 +1326,7 @@ class ShortTermService:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
             fast_codes = set(fast)
             official = {}
-            if codes and intraday and self.market_quotes:
+            if codes and intraday and self.scan_market_quotes:
                 now = self.now()
                 with self.lock:
                     if self.card_quote_session == session:
@@ -1327,7 +1337,7 @@ class ShortTermService:
                 missing = [code for code in codes if code not in official]
                 try:
                     if missing:
-                        official.update(self.market_quotes(missing, self.stock_meta, intraday) or {})
+                        official.update(self.scan_market_quotes(missing, self.stock_meta, intraday) or {})
                 except Exception as exc:
                     print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
             pause='';time_exhausted=False;live_observed=0;history_hits=0;live_checked=0
@@ -1341,8 +1351,7 @@ class ShortTermService:
                     memory_deferred = True
                     pause='記憶體餘裕不足，進度已保存';break
                 try:
-                    market=(self.stock_meta.get(code) or {}).get('market','').lower()
-                    suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
+                    suffix=market_suffix((self.stock_meta.get(code) or {}).get('market'))
                     live = official.get(code)
                     cached_history = self.intraday_history.get(code) if intraday else None
                     if cached_history:
@@ -1446,7 +1455,8 @@ class ShortTermService:
                 previous_live_at = previous.get('live_scan_observed_at') if previous.get('intraday') else None
                 payload['live_scan_observed_at'] = max(live_scan_at, previous_live_at or '') or None
                 payload['scope'].update(scan_round=cycle.get('round',1), batch_live_checked=live_checked,
-                                        batch_history_reused=history_hits)
+                                        batch_history_reused=history_hits,
+                                        batch_exchange_quotes=len(official))
             # Serializing the full checkpoint briefly duplicates its data. A
             # pressure spike here must leave the last persisted cursor usable.
             checkpoint_reserve = (CLOSE_CHECKPOINT_RESERVE_MB if not intraday else reserve)
@@ -1464,8 +1474,8 @@ class ShortTermService:
                     print('短線通知保存失敗：' + type(exc).__name__, flush=True)
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
             if intraday:
-                print('短線盤中第 %s 輪：本批行情有效 %s/%s，沿用已確認日線 %s 檔' %
-                      (cycle.get('round',1),live_checked,processed,history_hits),flush=True)
+                print('短線盤中第 %s 輪：MIS %s/%s，本批行情有效 %s/%s，沿用已確認日線 %s 檔' %
+                      (cycle.get('round',1),len(official),len(codes),live_checked,processed,history_hits),flush=True)
             continue_close = bool(not intraday and not complete and not memory_deferred and
                                   self.in_retry_window(session))
             if (intraday and not complete and (not pause or time_exhausted) and
