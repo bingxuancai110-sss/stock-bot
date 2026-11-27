@@ -229,8 +229,11 @@ def render_panel(category, events, labels, unavailable, history_ready, page, vis
             detail = f'<dl>{levels}</dl>'
             if event.get("spread") is not None and not event["provisional"]:
                 detail += f'<p>每股價差 {float(event["spread"]):+,.2f}</p>'
-            quote_link = "/web/market?" + urlencode({"code": event["code"]})
-            link = f'<a class="notice-chart-link" href="{escape(quote_link)}">查看 K 線 ›</a>'
+            quote_link = "/web/workbench?" + urlencode({
+                "tab": "短線", "st_code": event["code"], "st_direction": event["direction"],
+                "st_date": day, "st_action": event["type"], "st_live": int(event["provisional"]),
+            })
+            link = f'<a class="notice-chart-link" data-app-nav="1" href="{escape(quote_link)}">查看短線 K 線 ›</a>'
         else:
             title = event["title"]
             detail = f'<p>{escape(event.get("detail") or "")}</p>'

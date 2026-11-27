@@ -504,15 +504,51 @@
     if(alive(s)){var b=s.el.querySelector('.st-refresh');if(b){b.disabled=false;b.textContent='更新';}}
    });
  }
+ function openNoticeChart(s, query){
+  var code=query.get('st_code'), direction=query.get('st_direction')==='short'?'short':'long';
+  var lookup=new URL(location.href);
+  ['st_code','st_direction','st_date','st_action','st_live','_nav','fragment'].forEach(function(key){lookup.searchParams.delete(key);});
+  s.linked=true;s.direction=direction;
+  s.el.innerHTML='<div class="st-notices"><h3>短線 K 線 · '+esc(code)+' · '+(direction==='short'?'放空':'做多')+
+   '</h3><a href="'+esc(lookup.pathname+lookup.search)+'">返回短線清單 ›</a></div>'+
+   '<section class="st-detail" id="st-detail-'+esc(code)+'"><p role="status">正在讀取短線策略圖…</p></section>';
+  var panel=s.el.querySelector('.st-detail'), controller=new AbortController();
+  var timer=setTimeout(function(){controller.abort();},12000);
+  fetch(endpoint({code:code,direction:direction}),{credentials:'same-origin',cache:'no-store',signal:controller.signal})
+   .then(function(response){
+    if(response.status===404)return null;
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    return response.json();
+   })
+   .then(function(data){
+    if(!alive(s))return;
+    if(!data?.row){panel.innerHTML='<p role="status">目前的短線快照沒有保留這檔股票的策略圖。</p>';return;}
+    var row=data.row, day=query.get('st_date'), action=query.get('st_action'), provisional=query.get('st_live')==='1';
+    var match=(row.signals||[]).find(function(signal){
+     return signal.date===day&&signal.type===action&&!!signal.provisional===provisional;
+    });
+    detail(s,row);
+    if(match)select(s,row,match.id,panel);
+    else if(day&&action)panel.insertAdjacentHTML('afterbegin','<p role="status">原通知訊號未出現在目前快照。下方顯示這檔股票目前保存的短線圖。</p>');
+   })
+   .catch(function(){
+    if(!alive(s))return;
+    panel.innerHTML='<p role="status">短線策略圖暫時無法讀取。</p><button type="button">再試一次</button>';
+    panel.querySelector('button').onclick=function(){openNoticeChart(s,query);};
+   })
+   .finally(function(){clearTimeout(timer);});
+ }
  window.StockBotShortTerm={mount:function(el){
   document.dispatchEvent(new Event('stockbot:shorttermactive'));
-  if(current&&current.el===el){if(!current.loading&&!current.timer&&((current.data.meta||{}).building||Date.now()-(current.fetched||0)>30000))load(current,false);return;}
+  if(current&&current.el===el){if(!current.linked&&!current.loading&&!current.timer&&((current.data.meta||{}).building||Date.now()-(current.fetched||0)>30000))load(current,false);return;}
   current={el:el,data:{rows:[],meta:{building:true}},open:null,offset:0,direction:'long',priceRange:'all',sort:'signal',sector:'',shape:'',position:'',pending:false,history:false,range:60,end:null,event:null,request:0,loading:false,polls:0,timer:null,id:++sequence,detailCache:new Map()};
+  var query=new URLSearchParams(location.search);
+  if(query.get('tab')==='短線'&&/^\d{4}$/.test(query.get('st_code')||'')){openNoticeChart(current,query);return;}
   try{var saved=JSON.parse(localStorage.getItem('st-price-view')||'{}');if(['all','under100','100to500','500to1000','1000plus'].includes(saved.priceRange))current.priceRange=saved.priceRange;if(['signal','price_desc','price_asc'].includes(saved.sort))current.sort=saved.sort;}catch(ignore){}
   current.data=previousSnapshot(current,'顯示上次保存的結果，正在確認最新資料')||current.data;
   render(current);load(current,false);
- },refresh:function(el){this.mount(el);current.polls=0;load(current,true);}};
+ },refresh:function(el){this.mount(el);if(current.linked)return;current.polls=0;load(current,true);}};
  document.addEventListener('stockbot:pageleaving',dismissActionBanner);
- document.addEventListener('visibilitychange',function(){if(document.hidden)dismissActionBanner();else if(current&&!current.el.hidden&&!current.loading)load(current,false);});
+ document.addEventListener('visibilitychange',function(){if(document.hidden)dismissActionBanner();else if(current&&!current.linked&&!current.el.hidden&&!current.loading)load(current,false);});
  var panel=document.getElementById('wb-short-term');if(panel&&!panel.hidden)window.StockBotShortTerm.mount(panel);
 })();
