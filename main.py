@@ -51388,6 +51388,64 @@ function bindFactors(){
     }
     loadSource(workbenchSources.indexOf(target)>=0?target:'黑馬',false);
   }
+  document.getElementById('wb-asset-tabs').addEventListener('click',function(e){
+    var button=e.target.closest('button[data-asset]');
+    if(!button)return;
+    state.assetMode=button.dataset.asset;
+    state.source=state.assetMode==='etf'?'ETF':state.assetMode==='lab'?'策略研究':'黑馬';
+    state.query='';
+    if(state.assetMode==='lab')render();
+    else loadSource(state.source,false);
+  });
+  tabs.addEventListener('click',function(e){
+    var button=e.target.closest('button[data-source]');
+    if(!button)return;
+    var source=button.dataset.source;
+    if(source==='成效'||source==='我的排行'){
+      state.source=source;
+      render();
+      return;
+    }
+    loadSource(source,source==='雷達');
+  });
+  document.getElementById('wb-search').addEventListener('input',function(e){
+    state.query=e.target.value;
+    render();
+  });
+  document.getElementById('wb-filter').onclick=function(){
+    state.filterOpen=!state.filterOpen;
+    document.getElementById('wb-filter-panel').hidden=!state.filterOpen;
+    this.setAttribute('aria-expanded',String(state.filterOpen));
+  };
+  document.getElementById('wb-refresh').onclick=function(){
+    if(state.assetMode==='lab')loadStrategyLab(true);
+    else if(state.source==='成效'){state.reviewPollCount=0;requestReview(true);}
+    else loadSource(state.source||'黑馬',true);
+  };
+  document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};
+  document.getElementById('wb-filter-panel').addEventListener('click',function(e){
+    var button=e.target.closest('button');
+    if(!button)return;
+    ['kind','dir'].forEach(function(key){
+      if(!button.dataset[key])return;
+      state[key]=button.dataset[key];
+      root.querySelectorAll('[data-'+key+']').forEach(function(option){
+        option.classList.toggle('on',option===button);
+      });
+    });
+    render();
+  });
+  function setSort(button){
+    if(!button)return;
+    state.desc=state.sort===button.dataset.sort?!state.desc:true;
+    state.sort=button.dataset.sort;
+    root.querySelectorAll('[data-sort]').forEach(function(option){
+      option.classList.toggle('on',option.dataset.sort===state.sort);
+    });
+    render();
+  }
+  root.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};
+  document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
     var b=e.target&&e.target.closest?e.target.closest('#wb-rows .wb-row'):null;
