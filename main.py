@@ -28783,7 +28783,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261126-8">
 <script defer src="/static/short-term.js?v=20261127-1"></script>
-<script defer src="/static/notification-center.js?v=2"></script>
+<script defer src="/static/notification-center.js?v=3"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261127-2">
@@ -41004,21 +41004,6 @@ def web_market(uid):
       if (i >= n) sum -= bars[i - n].close;
       return i >= n - 1 ? sum / n : null;
     });
-   function ema(values, period) {
-     var out = values.map(function () { return null; });
-     if (values.length < period) return out;
-     var value = values.slice(0, period).reduce(function (a, b) { return a + b; }, 0) / period;
-     out[period - 1] = value;
-     var alpha = 2 / (period + 1);
-     for (var i = period; i < values.length; i++) { value = values[i] * alpha + value * (1 - alpha); out[i] = value; }
-     return out;
-   }
-   var fastEma = ema(bars.map(function (b) { return b.close; }), 12);
-   var slowEma = ema(bars.map(function (b) { return b.close; }), 26);
-   var dif = bars.map(function (b, i) { return fastEma[i] === null || slowEma[i] === null ? null : fastEma[i] - slowEma[i]; });
-   var firstDif = dif.findIndex(function (v) { return v !== null; });
-   var deaValues = ema(dif.filter(function (v) { return v !== null; }), 9), dea = bars.map(function () { return null; });
-   deaValues.forEach(function (v, i) { if (v !== null && firstDif + i < dea.length) dea[firstDif + i] = v; });
   });
   function ema(values, period) {
     var out = values.map(function () { return null; });
@@ -41045,6 +41030,10 @@ def web_market(uid):
   function x(i) { return left + (i - start + .5) * plotWidth / span; }
   function y(price) { return top + (hi - price) / (hi - lo) * (bottom - top); }
   function local(e) { var r = svg.getBoundingClientRect(); return {x: (e.clientX - r.left) * width / r.width, y: (e.clientY - r.top) * height / r.height}; }
+  function pinchRatio(points) {
+    var center = local({clientX:(points[0].clientX+points[1].clientX)/2,clientY:points[0].clientY});
+    return clamp((center.x-left)/plotWidth,0,1);
+  }
   function nearestDate(date) {
     var t = typeof date === 'number' ? date : Date.parse(date), lo = 0, hi = barTimes.length;
     while (lo < hi) { var mid = (lo + hi) >> 1; if (barTimes[mid] < t) lo = mid + 1; else hi = mid; }
@@ -41181,7 +41170,7 @@ def web_market(uid):
      el('line',{class:'market-crosshair',y1:top,y2:macdBottom},cross);
     el('circle',{class:'market-focus-dot',r:3},cross);
     el('g',{id:'market-user-drawings','clip-path':'url(#market-clip-'+config.period+')'});
-    paintDrawings(); show(idx);
+    paintDrawings(); show(clamp(idx, first, last));
   }
   function schedule() { if(frame===null) frame=requestAnimationFrame(render); }
   function view(a,n) { span=clamp(n,Math.min(8,bars.length),bars.length); start=clamp(a,0,bars.length-span); schedule(); }
@@ -41205,8 +41194,8 @@ def web_market(uid):
   function distance(a,b){return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);}
   function startPinch(){
     if(gesture&&gesture.kind==='drawing')gesture.drawing.points=gesture.points;
-    var p=Array.from(pointers.values()),r=svg.getBoundingClientRect();
-    gesture={kind:'pinch',distance:Math.max(1,distance(p[0],p[1])),span:span,anchor:start+clamp(((p[0].clientX+p[1].clientX)/2-r.left-left)/plotWidth,0,1)*span};
+    var p=Array.from(pointers.values());
+    gesture={kind:'pinch',distance:Math.max(1,distance(p[0],p[1])),span:span,anchor:start+pinchRatio(p)*span};
     paintDrawings();
   }
   svg.addEventListener('pointerdown',function(e){
@@ -41225,10 +41214,16 @@ def web_market(uid):
   function handlePointerMove(e){
     if(pointers.has(e.pointerId))pointers.set(e.pointerId,{clientX:e.clientX,clientY:e.clientY});
     if(gesture&&gesture.kind==='pinch'){
-      if(pointers.size!==2)return;var p=Array.from(pointers.values()),r=svg.getBoundingClientRect(),ratio=clamp(((p[0].clientX+p[1].clientX)/2-r.left-left)/plotWidth,0,1);
+      if(pointers.size!==2)return;var p=Array.from(pointers.values()),ratio=pinchRatio(p);
       var n=clamp(gesture.span*gesture.distance/Math.max(1,distance(p[0],p[1])),Math.min(8,bars.length),bars.length);view(gesture.anchor-ratio*n,n);return;
     }
-    if(!pointers.has(e.pointerId)) { if(mode!=='move')anchor(e,true);else show(nearestDate(anchor(e,false).date)); return; }
+    if(!pointers.has(e.pointerId)) {
+      if(e.pointerType!=='mouse'||!plotWidth)return;
+      var hover=local(e);
+      if(hover.x<left||hover.x>width-right||hover.y<top||hover.y>macdBottom)return;
+      if(mode!=='move')anchor(e,true);else show(nearestDate(anchor(e,false).date));
+      return;
+    }
     if(!gesture)return;
     if(gesture.kind==='pan'){view(gesture.start-(e.clientX-gesture.x)/plotWidth*gesture.span,gesture.span);return;}
     var p=anchor(e,true);show(nearestDate(p.date));
@@ -41268,7 +41263,9 @@ def web_market(uid):
   window.addEventListener('pointercancel',function(e){endPointer(e,true);},true);
   svg.addEventListener('wheel',function(e){e.preventDefault();zoom(e.deltaY<0?.85:1.18,clamp((local(e).x-left)/plotWidth,0,1));},{passive:false});
   svg.addEventListener('keydown',function(e){if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();var i=clamp(idx+(e.key==='ArrowLeft'?-1:1),0,bars.length-1);if(i<start||i>=start+span)view(i-span/2,span);show(i);}});
-  card.querySelectorAll('[data-chart-zoom]').forEach(function(b){b.onclick=function(){if(b.dataset.chartZoom==='reset')view(bars.length-initialSpan,initialSpan);else zoom(b.dataset.chartZoom==='in'?.75:1.33,.5);};});
+  card.querySelectorAll('[data-chart-zoom]').forEach(function(b){b.onclick=function(){if(b.dataset.chartZoom==='reset'){
+    idx=bars.length-1;view(bars.length-initialSpan,initialSpan);
+  }else zoom(b.dataset.chartZoom==='in'?.75:1.33,.5);};});
   card.querySelectorAll('[data-draw-mode]').forEach(function(b){b.onclick=function(){setMode(b.dataset.drawMode);};});
   card.querySelector('#market-delete-drawing').onclick=function(){if(selected!==null)save({action:'delete',id:selected});};
   card.querySelectorAll('[data-ma-toggle]').forEach(function(b){b.onclick=function(){ma[b.dataset.maToggle]=!ma[b.dataset.maToggle];b.setAttribute('aria-pressed',String(ma[b.dataset.maToggle]));render();};});
