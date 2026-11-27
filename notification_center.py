@@ -37,17 +37,20 @@ def notification_scope(uid):
     return sha256(f"stockbot-notices:{uid}".encode()).hexdigest()[:24]
 
 
+def notification_id(day, kind, event):
+    if event.get("recovered"):
+        return ""
+    if kind == "short":
+        identity = (day, kind, event["direction"], event["code"], event["type"], event["provisional"])
+    else:
+        identity = (day, kind, event["title"], event.get("detail"))
+    return sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:20]
+
+
 def notification_ids(events):
-    ids = []
-    for day, kind, event in events:
-        if event.get("recovered"):
-            continue
-        if kind == "short":
-            identity = (day, kind, event["direction"], event["code"], event["type"], event["provisional"])
-        else:
-            identity = (day, kind, event["title"], event.get("detail"))
-        ids.append(sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:20])
-    return " ".join(dict.fromkeys(ids))
+    ids = dict.fromkeys(notification_id(*event) for event in events)
+    ids.pop("", None)
+    return " ".join(ids)
 
 
 def save_short_events(connect, snapshot, today):
@@ -193,7 +196,8 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
     )
     return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台" data-notice-ids="{notification_ids(events)}">
       <div class="notice-center-head"><div><strong>最近 14 天</strong><small data-notice-count aria-live="polite">本分類 {counts.get(category, 0)} 筆</small></div>
-      <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div>
+      <div class="notice-tools"><button type="button" class="notice-mark-all" hidden>全部已讀</button>
+      <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div></div>
       <nav class="notice-center-tabs" aria-label="通知分類">{tabs}</nav>
       {panels}
     </section>'''
@@ -231,7 +235,8 @@ def render_panel(category, events, labels, unavailable, history_ready, page, vis
             title = event["title"]
             detail = f'<p>{escape(event.get("detail") or "")}</p>'
             summary = ""
-        cards.append(f'<article data-kind="{kind}"><div class="notice-card-meta"><b>{escape(badge)}</b>'
+        notice_id = notification_id(day, kind, event)
+        cards.append(f'<article data-kind="{kind}" data-notice-id="{notice_id}"><div class="notice-card-meta"><b>{escape(badge)}</b>'
                      f'<small>{escape(summary)}</small></div><h3>{escape(title)}</h3>{detail}{link}</article>')
     notes = []
     relevant_errors = [key for key in unavailable if category in ("all", key)]
@@ -255,7 +260,8 @@ def render_panel(category, events, labels, unavailable, history_ready, page, vis
                 links.append(f'<a href="/web/notifications?kind={category}&amp;page={number}">{caption}</a>')
         pagination = f'<nav class="notice-pagination" aria-label="通知分頁">第 {page} / {pages} 頁 {"".join(links)}</nav>'
     hidden = "" if visible else " hidden"
-    return (f'<div data-notice-panel="{category}" data-count="{len(events)}" data-page="{page}"{hidden}>'
+    return (f'<div data-notice-panel="{category}" data-count="{len(events)}" data-page="{page}" '
+            f'data-notice-ids="{notification_ids(events)}"{hidden}>'
             f'{source_link}{status}{"".join(cards)}{pagination}</div>')
 
 
@@ -294,8 +300,14 @@ CENTER_CSS = """
 .notice-center-tabs a{display:grid;place-items:center;min-height:44px;text-decoration:none;border-radius:10px;font-size:.9rem}
 .notice-center-tabs small,.notice-center-head small{display:block;font-size:.76rem;opacity:.8}
 .notice-center-head strong{font-size:1rem}
-.notice-refresh{padding:11px 13px;border:1px solid var(--ui-line,#d3dee5);border-radius:12px;
+.notice-tools{display:flex;align-items:center;gap:6px}
+.notice-tools .notice-mark-all[hidden]{display:none!important}
+.notice-tools .notice-mark-all,.notice-refresh{padding:9px 10px;min-height:44px;display:inline-flex;
+  align-items:center;box-sizing:border-box;font-size:.86rem;border:1px solid var(--ui-line,#d3dee5);border-radius:12px;
   background:var(--ui-surface,#fff);text-decoration:none}
+.notice-center-tabs a[data-notice-tab]{position:relative}
+.notice-center-tabs a[data-unread=true]::before{content:"";position:absolute;top:7px;right:6px;width:6px;height:6px;
+  border-radius:50%;background:#d02139}
 .notice-center [data-notice-panel][hidden]{display:none!important}
 html body#stockbot-app #app-page-content .notice-center-tabs a[data-notice-tab]{
   background:transparent!important;color:var(--ui-ink,#18374a)!important;
