@@ -197,7 +197,7 @@ def render_center(category, feeds, unavailable=(), history_ready=True, page=1):
     return f'''<style>{CENTER_CSS}</style><section class="notice-center" aria-label="通知台" data-notice-ids="{notification_ids(events)}">
       <div class="notice-center-head"><div><strong>最近 14 天</strong><small data-notice-count aria-live="polite">本分類 {counts.get(category, 0)} 筆</small></div>
       <div class="notice-tools"><button type="button" class="notice-mark-all" hidden>全部已讀</button>
-      <a class="notice-refresh" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div></div>
+      <a class="notice-refresh" data-app-nav="1" href="/web/notifications?kind={category}&amp;refresh=1">↻ 重新整理</a></div></div>
       <nav class="notice-center-tabs" aria-label="通知分類">{tabs}</nav>
       {panels}
     </section>'''
@@ -260,7 +260,7 @@ def render_panel(category, events, labels, unavailable, history_ready, page, vis
         links = []
         for caption, number in (("‹ 上一頁", page - 1), ("下一頁 ›", page + 1)):
             if 1 <= number <= pages:
-                links.append(f'<a href="/web/notifications?kind={category}&amp;page={number}">{caption}</a>')
+                links.append(f'<a data-app-nav="1" href="/web/notifications?kind={category}&amp;page={number}">{caption}</a>')
         pagination = f'<nav class="notice-pagination" aria-label="通知分頁">第 {page} / {pages} 頁 {"".join(links)}</nav>'
     hidden = "" if visible else " hidden"
     return (f'<div data-notice-panel="{category}" data-count="{len(events)}" data-page="{page}" '
