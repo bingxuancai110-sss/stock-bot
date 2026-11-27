@@ -27,6 +27,7 @@ SELECTION_VERSION = 15
 LIGHT_BATCH = 64
 MEMORY_RETRY_MINUTES = (2, 4, 8)
 INTRADAY_STALE_SECONDS = 20 * 60
+INTRADAY_HISTORY_LIMIT = 96
 
 
 class ScanMemoryDeferred(RuntimeError):
@@ -889,6 +890,9 @@ class ShortTermService:
         self.memory_retry_attempt = 0
         self.memory_retry_at = None
         self.cache_mode=None;self.radar_at=None;self.trigger='頁面補檢';self.full_queue=[]
+        self.intraday_history_day = None
+        self.intraday_history = {}
+        self.intraday_retry = None
 
     def intraday(self):
         n=self.now()
@@ -1079,6 +1083,38 @@ class ShortTermService:
                         ranks[code] = rank
         return sorted(ranks, key=ranks.__getitem__)[:INTRADAY_PRIORITY_LIMIT]
 
+    def remember_intraday_history(self, code, quote, session_day):
+        columns = ('close_dates', 'opens', 'highs', 'lows', 'closes', 'volumes')
+        dates = quote.get('close_dates') or []
+        end = len(dates) - int(bool(dates) and day(dates[-1]) == session_day)
+        if end < 65 or any(len(quote.get(key) or []) != len(dates) for key in columns):
+            return
+        history = {key: list(quote[key][:end]) for key in columns}
+        if len(quote.get('adj_closes') or []) == len(dates):
+            history['adj_closes'] = list(quote['adj_closes'][:end])
+        self.intraday_history.pop(code, None)
+        self.intraday_history[code] = history
+        while len(self.intraday_history) > INTRADAY_HISTORY_LIMIT:
+            self.intraday_history.pop(next(iter(self.intraday_history)))
+
+    def schedule_intraday_retry(self, session):
+        with self.lock:
+            if self.intraday_retry == session or not self.in_retry_window(session):
+                return
+            self.intraday_retry = session
+
+        def retry():
+            with self.lock:
+                if self.intraday_retry != session:
+                    return
+                self.intraday_retry = None
+                if not self.running and self.in_retry_window(session):
+                    self.payload(refresh=True, quote_only=True)
+
+        timer = threading.Timer(75, retry)
+        timer.daemon = True
+        timer.start()
+
     def inputs(self, keep):
         # The catalogue defines the universe. Institution activity never chooses
         # which symbols get a technical look. Do not hold a DB connection over HTTP.
@@ -1206,7 +1242,9 @@ class ShortTermService:
         if self.background_slot and not self.background_slot.acquire(blocking=False):
             with self.lock:
                 self.running = False
-                self.error = '背景預載執行中，下輪排程會續掃'
+                self.error = '其他背景工作執行中，稍後自動續掃'
+            if intraday:
+                self.schedule_intraday_retry(session)
             return
         try:
             with self.lock:self.running=True
@@ -1223,12 +1261,21 @@ class ShortTermService:
                     return
                 print('短線收盤開始分批詳查', flush=True)
             with self.lock:previous=self.cached or {}
+            if self.intraday_history_day != session[0] or not intraday:
+                self.intraday_history.clear()
+                self.intraday_history_day = session[0] if intraday else None
             saved=previous.get('cycle') or {}
-            resume=(saved.get('day')==day(self.now()) and saved.get('intraday')==intraday and
-                    previous.get('selection_version')==SELECTION_VERSION and saved.get('cursor',0)<len(saved.get('queue',[])))
+            same_cycle=(saved.get('day')==session[0] and saved.get('intraday')==intraday and
+                        previous.get('selection_version')==SELECTION_VERSION and bool(saved.get('queue')))
+            resume=same_cycle and saved.get('cursor',0)<len(saved['queue'])
+            revisit=intraday and same_cycle and not resume
             closing_batch = not intraday and resume
-            if resume:
+            fast = []
+            if resume or revisit:
                 cycle=dict(saved);self.stock_meta=cycle['stocks'];self.scan_meta=copy.deepcopy(previous.get('scope',{}))
+                if revisit:
+                    cycle.update(cursor=0,evaluated=[],excluded={},failures=0,failed_codes=[],
+                                 started_at=self.now().isoformat(),round=saved.get('round',1)+1)
                 cursor=cycle['cursor'];queue=cycle['queue']
                 batch_size = MAX_POOL if intraday else CLOSE_POOL
                 # Reserve at least sixteen of the 24 slots for forward progress.
@@ -1267,6 +1314,7 @@ class ShortTermService:
             short_by_code={r['code']:r for r in previous.get('short_rows',[]) if r['code'] in queued_codes}
             with self.lock:
                 self.phase='全市場分批詳查';self.progress=len(covered);self.progress_total=len(queue)
+            fast_codes = set(fast)
             official = {}
             if codes and intraday and self.market_quotes:
                 now = self.now()
@@ -1282,7 +1330,7 @@ class ShortTermService:
                         official.update(self.market_quotes(missing, self.stock_meta, intraday) or {})
                 except Exception as exc:
                     print('短線官方報價暫缺：'+type(exc).__name__, flush=True)
-            pause='';time_exhausted=False;live_observed=0
+            pause='';time_exhausted=False;live_observed=0;history_hits=0;live_checked=0
             for i,code in enumerate(codes):
                 # Release the prior symbol's large quote/history response before
                 # requesting another one on the free 512 MiB instance.
@@ -1295,8 +1343,16 @@ class ShortTermService:
                 try:
                     market=(self.stock_meta.get(code) or {}).get('market','').lower()
                     suffix='.TW' if market in ('上市','twse','listed','tw') else '.TWO' if market in ('上櫃','上柜','tpex','otc','two') else None
-                    q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix,
-                                 force_refresh=intraday or closing_batch,cache_result=False)
+                    live = official.get(code)
+                    cached_history = self.intraday_history.get(code) if intraday else None
+                    if cached_history:
+                        stitched = with_official_live_bar(cached_history, live, self.now())
+                        if stitched is not cached_history:
+                            q = stitched
+                            history_hits += 1
+                    if q is None:
+                        q=self.quote(code,rng='6mo',include_mis=False,request_timeout=5,market_suffix=suffix,
+                                     force_refresh=intraday or closing_batch,cache_result=False)
                     if not q:
                         failures+=1;failed_codes.add(code)
                         excluded['行情來源暫缺']=excluded.get('行情來源暫缺',0)+1
@@ -1341,6 +1397,9 @@ class ShortTermService:
                         excluded[reason]=excluded.get(reason,0)+1
                     if intraday and live_fresh and bars and bars[-1]['date'] == day(self.now()):
                         live_observed = max(live_observed, observed)
+                        live_checked += 1
+                        if (row and row.get('active')) or (short_row and short_row.get('active')) or code in fast_codes:
+                            self.remember_intraday_history(code, q, session[0])
                 except Exception as exc:
                     failures+=1;failed_codes.add(code)
                     excluded['資料讀取或計算失敗']=excluded.get('資料讀取或計算失敗',0)+1
@@ -1386,6 +1445,8 @@ class ShortTermService:
                                 if live_observed else '')
                 previous_live_at = previous.get('live_scan_observed_at') if previous.get('intraday') else None
                 payload['live_scan_observed_at'] = max(live_scan_at, previous_live_at or '') or None
+                payload['scope'].update(scan_round=cycle.get('round',1), batch_live_checked=live_checked,
+                                        batch_history_reused=history_hits)
             # Serializing the full checkpoint briefly duplicates its data. A
             # pressure spike here must leave the last persisted cursor usable.
             checkpoint_reserve = (CLOSE_CHECKPOINT_RESERVE_MB if not intraday else reserve)
@@ -1402,6 +1463,9 @@ class ShortTermService:
                 except Exception as exc:
                     print('短線通知保存失敗：' + type(exc).__name__, flush=True)
             print('✅ 短線分批詳查 %s/%s，本批 %s 檔，候選 %s 檔'%(len(covered),len(queue),processed,len(rows)),flush=True)
+            if intraday:
+                print('短線盤中第 %s 輪：本批行情有效 %s/%s，沿用已確認日線 %s 檔' %
+                      (cycle.get('round',1),live_checked,processed,history_hits),flush=True)
             continue_close = bool(not intraday and not complete and not memory_deferred and
                                   self.in_retry_window(session))
             if (intraday and not complete and (not pause or time_exhausted) and
@@ -1421,6 +1485,8 @@ class ShortTermService:
         except Exception as exc:
             with self.lock:self.error=str(exc)[:160]
             print('⚠️ 短線研究暫緩: '+str(exc)[:160],flush=True)
+            if intraday:
+                self.schedule_intraday_retry(session)
         finally:
             if claimed_at:
                 try:
