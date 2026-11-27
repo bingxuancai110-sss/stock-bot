@@ -28783,7 +28783,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261126-8">
 <script defer src="/static/short-term.js?v=20261127-3"></script>
-<script defer src="/static/notification-center.js?v=3"></script>
+<script defer src="/static/notification-center.js?v=4"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
 <link rel="stylesheet" href="/static/app-polish.css?v=20261127-3">
