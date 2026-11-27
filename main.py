@@ -28778,7 +28778,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <link rel="stylesheet" href="/static/ui-feedback.css?v=20261125-2">
 <link rel="stylesheet" href="/static/app-shell.css?v=20261115-2">
 <link rel="stylesheet" href="/static/workbench-mobile.css?v=20261105-8">
-<link rel="stylesheet" href="/static/app-experience.css?v=20261125-7">
+<link rel="stylesheet" href="/static/app-experience.css?v=20261127-1">
 <script defer src="/static/ui-feedback.js?v=20261125-2"></script>
 <script defer src="/static/app-experience.js?v=20261125-4"></script>
 <link rel="stylesheet" href="/static/short-term.css?v=20261126-8">
@@ -29040,6 +29040,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
   var appNavSeq = 0;
   var appNavController = null;
   var preloadedPages = new Map(), preloadAttempted = new Set();
+  var preloadView = location.pathname;
   var preloadedData = new Map();
   var preloadTimer = 0, preloadJob = null;
   var noticePreload = null, noticeFetchedAt = -Infinity;
@@ -29205,8 +29206,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       var linkPath = new URL(link.href, window.location.href).pathname;
       var linkKey = appRouteKeys[linkPath] || '';
       var navKey = linkPath === '/web/more' ? 'more' : (primaryKeys[linkKey] ? linkKey : (linkKey ? 'more' : ''));
-      link.classList.toggle('on', !!selectedKey && navKey === selectedKey);
-      if (!!selectedKey && navKey === selectedKey) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
+      var active = link.closest('.app-bottom-nav,.top-nav') ? !!selectedKey && navKey === selectedKey :
+        link.classList.contains('app-notice-link') && path === linkPath;
+      link.classList.toggle('on', active);
+      if (active) link.setAttribute('aria-current','page'); else link.removeAttribute('aria-current');
     }});
     var h1 = document.querySelector('.app-header h1');
     if (h1 && appTitles[path]) h1.textContent = appTitles[path];
@@ -29298,8 +29301,10 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
       var link = document.querySelector('.app-bottom-nav a[data-app-nav="1"][href^="' + path + '"]');
       return link ? new URL(link.href) : null;
     }}).filter(function(url) {{
-      return url && url.origin === location.origin && !preloadAttempted.has(appViewKey(url.href)) &&
-        appViewKey(url.href) !== appCurrentViewKey;
+      if (!url || url.origin !== location.origin) return false;
+      var key = appViewKey(url.href), saved = preloadedPages.get(key);
+      return key !== appCurrentViewKey && !preloadAttempted.has(key) &&
+        !(saved && saved.expiresAt > performance.now());
     }});
   }}
 
@@ -29327,12 +29332,16 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         credentials:'same-origin', cache:'no-store', priority:'low', signal:controller.signal,
         headers:{{'X-StockBot-Preload':'1'}}
       }};
-      job.result = fetch(url, preloadOptions)
+      job.fragmentResult = fetch(url, preloadOptions)
         .then(function(response) {{ return response.ok && !response.redirected ? response.text() : ''; }})
         .then(function(fragment) {{
           if (controller.signal.aborted || !fragment.includes(preloadTargets[url.pathname]) ||
               fragment.includes('AUTH_EXPIRED')) return '';
           preloadedPages.set(key, {{fragment:fragment, expiresAt:performance.now() + 30000}});
+          return fragment;
+        }}).catch(function() {{ return ''; }});
+      job.result = job.fragmentResult.then(function(fragment) {{
+          if (!fragment || controller.signal.aborted) return fragment;
           var dataPath = preloadDataPath(url.pathname);
           if (dataPath) {{
             var dataUrl = new URL(dataPath, location.origin);
@@ -29371,7 +29380,13 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     preloadAttempted.clear();
     noticeFetchedAt = -Infinity;
   }}
-  document.addEventListener('stockbot:pagecontentready', schedulePagePreload);
+  document.addEventListener('stockbot:pagecontentready', function() {{
+    if (location.pathname === '/web/portfolio' && preloadView !== location.pathname) {{
+      preloadAttempted.clear();
+    }}
+    preloadView = location.pathname;
+    schedulePagePreload();
+  }});
   document.addEventListener('stockbot:shorttermactive', stopPagePreload);
   document.addEventListener('stockbot:homedetailready', schedulePagePreload);
   document.addEventListener('stockbot:positionschanged', function() {{
@@ -29393,7 +29408,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var warmFragment = savedPage && savedPage.expiresAt > performance.now() ? savedPage.fragment : '';
     if (savedPage && !warmFragment) preloadedPages.delete(key);
     var inFlight = sameOrigin && preloadJob && preloadJob.key === key &&
-        !preloadJob.controller.signal.aborted ? preloadJob.result : null;
+        !preloadJob.controller.signal.aborted ? preloadJob.fragmentResult : null;
     if (sameOrigin && noticePreload && noticePreload.key === key) inFlight = noticePreload.result;
     window.clearTimeout(preloadTimer);
     preloadTimer = 0;
@@ -29437,13 +29452,14 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     var navStartedAt = performance.now();
     var tabDirection = appTabDirection(target.pathname);
     var routeTitle = appTitles[target.pathname] || '頁面';
-    if (window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
+    if (!warmFragment && window.showPageNavLoader) window.showPageNavLoader('正在開啟' + routeTitle, true);
     var routeLoadTimedOut = false;
     var routeLoadTimeoutId = null;
     appContent.setAttribute('aria-busy', 'true');
     appContent.classList.add('app-page-loading');
     var retry = function() {{ switchAppPage(retryHref, pushState); }};
-    if (window.StockBotUI) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{
+    if (window.StockBotUI && warmFragment) window.StockBotUI.routeEnd(null);
+    if (window.StockBotUI && !warmFragment) window.StockBotUI.routeStart('正在開啟' + routeTitle + '…', target.pathname, controller ? function() {{
       controller.abort();
       if (inFlight) stopPagePreload();
     }} : null, retry);
@@ -29489,6 +29505,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
         hideLocalPageLoading();
         target.searchParams.delete('fragment');
         if (pushState) history.pushState({{stockbotApp:true,scrollY:0}}, '', target.pathname + target.search);
+        appCurrentViewKey = appViewKey(target.href);
         setAppNavState(target.pathname);
         appContent.dataset.appTabDirection = tabDirection;
         executeFragmentScripts(appContent);
@@ -29512,8 +29529,6 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
           console.info('[台股 BOT] 頁面切換完成', target.pathname, navElapsed + 'ms');
         }} catch (ignore) {{}}
         // Restore only after the actual fragment and its controls are ready.
-        // The volatile _nav timestamp must not create a new view identity.
-        appCurrentViewKey = appViewKey(target.href);
         var restoredScroll = window.StockBotUI ? window.StockBotUI.restoreView(appCurrentViewKey) : 0;
         window.scrollTo({{top:restoredScroll, behavior:'instant'}});
       }})
