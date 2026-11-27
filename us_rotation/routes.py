@@ -210,7 +210,7 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
   </section>
   <section class="us-section" id="us-risk-section"><div class="us-section-head"><div><h2>風險與止跌觀察</h2><p>先選市場，再看壓力與短線價格突破。</p></div></div><div class="us-alert-grid" id="us-risk-alerts"></div><p class="us-note">指標只供觀察，不代表一定下跌或已經見底。歷史統計可在各卡片展開查看。</p></section>
   <section class="us-section">
-    <div class="us-section-head"><div><h2>市場輪動概況</h2><p id="us-status">載入最近完成的產業快照</p></div></div>
+    <div class="us-section-head"><div><h2>市場輪動概況</h2><p id="us-status" role="status">載入最近完成的產業快照</p></div><button type="button" class="us-legend-button" data-us-refresh>重新整理</button></div>
     <div class="us-summary-grid" id="us-summary"></div>
     <details class="us-research"><summary>資料更新方式</summary><div class="us-source" style="margin-top:11px"><b>資料提醒</b><span>每日收盤資料，非即時報價。週一至週五台北時間 07:00 由既有熱身排程更新，完成後才發布新快照；頁面顯示的是最近一次成功結果。美股與台股各自標示交易日期。</span></div></details>
   </section>
@@ -389,10 +389,10 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
  let reading=false,disposed=false,readController=null;
  function disposeRead(){disposed=true;if(readController)readController.abort();document.removeEventListener('stockbot:pageleaving',disposeRead);window.removeEventListener('pagehide',disposeRead);}
  document.addEventListener('stockbot:pageleaving',disposeRead);window.addEventListener('pagehide',disposeRead);
- async function loadData(){
+ async function loadData(force=false){
   if(reading||disposed||!root.isConnected)return;
   reading=true;root.setAttribute('aria-busy','true');
-  root.querySelectorAll('[data-period],[data-us-retry],[data-reload-research]').forEach(b=>b.disabled=true);
+  root.querySelectorAll('[data-us-refresh],[data-us-retry]').forEach(b=>b.disabled=true);
   $('#us-status').textContent=state.snapshot?'重新讀取已完成快照，保留目前資料…':'正在讀取已完成快照…';
   let failure=null;
   try{
@@ -400,10 +400,11 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     if(disposed||!root.isConnected)return;
     readController=new AbortController();const timer=setTimeout(()=>readController.abort(),10000);
     try{
-     const readSnapshot=window.stockBotFetchPreloaded||fetch;
+     const readSnapshot=!force&&window.stockBotFetchPreloaded||fetch;
      const response=await readSnapshot(root.dataset.api+'?t='+encodeURIComponent(new URLSearchParams(location.search).get('t')||''),{credentials:'same-origin',cache:'no-store',signal:readController.signal});
      if(!response.ok){const error=new Error('HTTP '+response.status);error.retryable=response.status===408||response.status===429||response.status>=500;throw error;}
      const data=await response.json();if(!data||data.ok===false||!Object.prototype.hasOwnProperty.call(data,'snapshot')){const error=new Error('Invalid snapshot response');error.retryable=false;throw error;}
+     if(!data.snapshot&&state.snapshot){const error=new Error('Snapshot unavailable');error.retryable=false;throw error;}
      if(!disposed&&root.isConnected)applyData(data);return;
     }catch(error){failure=error;if(error.retryable===false||attempt===2)break;}
     finally{clearTimeout(timer);}
@@ -416,12 +417,11 @@ def create_blueprint(*, web_login_required, render_page, get_db_connection,
     ['#us-summary','#us-risk-alerts','#us-heat','#us-ranking','#us-quadrant','#us-detail','#us-gap','#us-history'].forEach(id=>empty($(id),'暫時無法讀取快照','讀取失敗不代表沒有資料；目前無法確認行情或訊號狀態。'));
    }
    const status=$('#us-status');status.setAttribute('role','status');status.textContent=(failure&&/HTTP 40[13]/.test(failure.message))?'登入已失效，請重新登入。':state.snapshot?'暫時無法更新，保留上次成功讀取的資料。':'暫時無法讀取已完成快照，不代表沒有資料。';
-   const retry=document.createElement('button');retry.type='button';retry.className='us-legend-button';retry.dataset.usRetry='1';retry.textContent='重新讀取';status.append(' ',retry);
   }finally{
-   reading=false;readController=null;if(!disposed&&root.isConnected){root.removeAttribute('aria-busy');root.querySelectorAll('[data-period],[data-us-retry],[data-reload-research]').forEach(b=>b.disabled=false);}
+   reading=false;readController=null;if(!disposed&&root.isConnected){root.removeAttribute('aria-busy');root.querySelectorAll('[data-us-refresh],[data-us-retry]').forEach(b=>b.disabled=false);}
   }
  }
- root.addEventListener('click',event=>{if(event.target.closest('[data-us-retry]'))loadData();});
+ root.addEventListener('click',event=>{if(event.target.closest('[data-us-refresh],[data-us-retry]'))loadData(true);});
  loadData();
  root.querySelectorAll('[data-period]').forEach(b=>b.addEventListener('click',()=>{root.querySelectorAll('[data-period]').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});state.period=Number(b.dataset.period);renderHeat();}));
 })();

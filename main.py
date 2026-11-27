@@ -28786,7 +28786,7 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
 <script defer src="/static/notification-center.js?v=3"></script>
 <link rel="stylesheet" href="/static/trade-completion.css?v=20261117-1">
 <link rel="stylesheet" href="/static/portfolio-polish.css?v=20261117-1">
-<link rel="stylesheet" href="/static/app-polish.css?v=20261127-2">
+<link rel="stylesheet" href="/static/app-polish.css?v=20261127-3">
 <script defer src="/static/trade-completion.js?v=20261117-1"></script>
 <script defer src="/static/settings-theme.js?v=20261122-1"></script>
 <script defer src="/static/position-allocation.js?v=20261126-3"></script>
@@ -38561,7 +38561,7 @@ def web_leaderboard(uid):
     # 用 button 而非 <a>：連結會觸發整頁重新載入，那正是要避免的事。
     # 保留 data-board 讓 JS 知道該顯示哪一組。
     tabs = f"""
-<div class="tabs rank-tabs" id="rankTabs">
+<div class="tabs rank-tabs" id="rankTabs" role="group" aria-label="排行榜分類">
   <button type="button" data-board="short" class="{'on' if active_board == 'short' else ''}">短線　近30天</button>
   <button type="button" data-board="long" class="{'on' if active_board == 'long' else ''}">長線　累計</button>
   <button type="button" data-board="season" class="{'on' if active_board == 'season' else ''}">賽季　本季</button>
@@ -40386,12 +40386,16 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
   // 重跑一次完整計算，開一次要等好幾秒。
   var tabs = document.getElementById('rankTabs');
   if (!tabs) return;
+  tabs.querySelectorAll('button[data-board]').forEach(function (button) {{
+    button.setAttribute('aria-pressed', String(button.classList.contains('on')));
+  }});
   tabs.addEventListener('click', function (e) {{
     var btn = e.target.closest('button[data-board]');
     if (!btn) return;
     var board = btn.getAttribute('data-board');
     Array.prototype.forEach.call(tabs.querySelectorAll('button'), function (b) {{
-      b.className = (b === btn) ? 'on' : '';
+      b.classList.toggle('on', b === btn);
+      b.setAttribute('aria-pressed', String(b === btn));
     }});
     ['panel', 'note', 'caption'].forEach(function (kind) {{
       Array.prototype.forEach.call(
@@ -40416,7 +40420,7 @@ body #app-page-content .rank-rows .rank-card .bot-history-price-values {
     try {{
       var u = new URL(window.location.href);
       u.searchParams.set('board', board);
-      window.history.replaceState(null, '', u.toString());
+      window.history.replaceState(window.history.state, '', u.toString());
     }} catch (ignore) {{}}
   }});
 }})();
@@ -51227,9 +51231,9 @@ function bindFactors(){
     if(source==='短線'){var panel=document.getElementById('wb-short-term');if(window.StockBotShortTerm){if(forceRefresh)window.StockBotShortTerm.refresh(panel);else window.StockBotShortTerm.mount(panel);}return Promise.resolve(null);}
     if(!source || source==='成效' || source==='我的排行') return Promise.resolve(null);
     // forceRefresh 只重新讀取後端已保存快照，不觸發全市場重掃；避免分頁永遠沿用初次進入時的舊資料。
-    if(forceRefresh) delete state.loadedSources[source];
-    if(state.loadedSources[source]) return Promise.resolve({source:source,loaded:true});
     if(state.loadingSources[source]) return state.loadingSources[source];
+    if(state.loadedSources[source]&&!forceRefresh) return Promise.resolve({source:source,loaded:true});
+    var hasPrevious=state.loadedSources[source]&&state.rows.some(function(row){return row.source===source;});
 
     // 選股台入口不能因為單一快照 API 卡住而永遠停在「正在載入」。
     // Render／資料庫偶發延遲時，12 秒後放棄該來源，讓頁面仍可進入並顯示其他快照。
@@ -51261,10 +51265,14 @@ function bindFactors(){
         if(!data.ok)throw new Error(data.error||'載入失敗');
         var returnedRows=Array.isArray(data.rows)?data.rows:[];
         var building=!!(data.meta&&data.meta.building);
-        state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(returnedRows);
+        var keepPrevious=hasPrevious&&!returnedRows.length&&
+          (building||(data.meta&&(data.meta.available===false||data.meta.deferred)));
+        if(!keepPrevious)state.rows=state.rows.filter(function(r){return r.source!==source;}).concat(returnedRows);
         if(source==='黑馬') state.scoreChanges=Array.isArray(data.score_changes)?data.score_changes:state.scoreChanges;
         if(source==='持股') note.textContent='持股已載入：優先使用最近已保存的自選股評分快照。';
-        state.sources[source]=Object.assign({},state.sources[source]||{},data.meta||{available:true});
+        var previous=state.sources[source]||{};
+        state.sources[source]=keepPrevious?Object.assign({},previous,{stale:true,building:building,note:'保留上次快照，等候新資料'}):
+          Object.assign({},previous,{stale:false,building:false,error:null},data.meta||{available:true});
         if(data.meta && typeof data.meta.market_open === 'boolean' &&
            (source==='黑馬'||source==='雷達')){
           state.marketOpen=data.meta.market_open;
@@ -51273,7 +51281,7 @@ function bindFactors(){
           if(!state.marketOpen && state.timer){clearInterval(state.timer);state.timer=null;}
         }
         if(building){
-          delete state.loadedSources[source];
+          if(!keepPrevious)delete state.loadedSources[source];
           state.snapshotRetryCounts[source]=(state.snapshotRetryCounts[source]||0)+1;
         }else{
           state.loadedSources[source]=true;
@@ -51286,7 +51294,7 @@ function bindFactors(){
         }
         var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
         console.info('[台股 BOT] 選股快照 '+source+' API 耗時 '+sourceElapsed.toFixed(2)+' 秒'+(building?'（背景重建中）':''));
-        if(source===state.source&&(source==='黑馬'||source==='雷達')){
+        if(source===state.source){
           finishWorkbenchLoad(building?'背景排程中':data.meta&&data.meta.available===false?'暫緩':'完成');
         }
         renderTabs();
@@ -51295,7 +51303,7 @@ function bindFactors(){
           var attempts=state.snapshotRetryCounts[source]||0;
           if(attempts<=60){
             window.setTimeout(function(){
-              if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);
+              if(root.isConnected&&!document.hidden&&state.source===source&&!state.loadingSources[source])fetchWorkbenchSource(source,keepPrevious);
             },8000);
           }else{
             state.sources[source].building=false;
@@ -51312,15 +51320,20 @@ function bindFactors(){
         var em=String(e&&e.name==='AbortError'?'逾時（12 秒）':(e&&e.message||e));
         var sourceElapsed=Math.max(0,(performance.now()-sourceStartedAt)/1000);
         console.error('[台股 BOT] 選股快照 '+source+' 失敗，耗時 '+sourceElapsed.toFixed(2)+' 秒：'+em);
-        state.sources[source]=Object.assign({},state.sources[source]||{},{available:false,error:em});
-        if(source===state.source){status.removeAttribute('data-loading-source');status.textContent=source+'載入失敗';}
-        if(source===state.source&&(source==='黑馬'||source==='雷達'))finishWorkbenchLoad('失敗');
+        state.sources[source]=Object.assign({},state.sources[source]||{},hasPrevious?
+          {stale:true,error:em}:{available:false,error:em});
+        if(source===state.source){
+          status.removeAttribute('data-loading-source');
+          status.textContent=hasPrevious?source+' 暫時無法更新，保留上次快照':source+'載入失敗';
+        }
+        if(source===state.source)finishWorkbenchLoad('失敗');
         renderTabs();
         var retryCount=state.snapshotRetryCounts[source]||0;
+        if(hasPrevious)return null;
         if(retryCount<3 && (!e || e.name==='AbortError' || /HTTP 5\d\d|非 JSON|有效 JSON|Failed to fetch|NetworkError|逾時/.test(em))){
           state.snapshotRetryCounts[source]=retryCount+1;
           if(source===state.source){status.textContent=source+' 載入失敗，正在重試 '+(retryCount+1)+'/3…';rowsEl.innerHTML='<div class="wb-empty"><b>暫時無法取得資料</b><small>'+esc(em)+'；系統正在自動重試。</small></div>';}
-          window.setTimeout(function(){if(!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);},2000*(retryCount+1));
+          window.setTimeout(function(){if(root.isConnected&&!document.hidden&&state.source===source&&!state.loadedSources[source]&&!state.loadingSources[source])fetchWorkbenchSource(source);},2000*(retryCount+1));
         }else if(source===state.source){status.textContent=source+' 快照載入失敗（'+sourceElapsed.toFixed(2)+' 秒）';rowsEl.innerHTML='<div class="wb-empty wb-load-error"><b>'+esc(source)+' 快照載入失敗</b><small>'+esc(em)+'；可按「重新整理」重試，其他分頁仍可使用。</small></div>';}
         return null;
       });
@@ -51332,22 +51345,22 @@ function bindFactors(){
     if(source==='短線'){state.source=source;state.assetMode='stock';render();if(forceRefresh&&window.StockBotShortTerm)window.StockBotShortTerm.refresh(document.getElementById('wb-short-term'));return;}
     if(!source||source==='成效'||source==='我的排行')return;
     state.source=source;
-    var loadEpoch=state.viewEpoch||0;
     if(source==='ETF')state.assetMode='etf';
     else if(source!=='ETF')state.assetMode='stock';
     render();
-    if(state.loadedSources[source]&&!forceRefresh)return;
+    if(state.loadedSources[source]&&!forceRefresh){
+      status.removeAttribute('data-loading-source');
+      status.textContent=source+((state.sources[source]||{}).stale?' · 舊快照待更新':'已載入');
+      return;
+    }
     state.snapshotRetryCounts[source]=0;
     status.textContent='正在載入 '+source+' 快照…';
-    count.textContent='正在讀取 '+source+'，完成後顯示筆數';
-    note.textContent='只讀取已保存快照；切換分類不重新掃描市場。';
-    rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
-    fetchWorkbenchSource(source, !!forceRefresh).then(function(){
-      if(state.source===source && loadEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer){
-        status.textContent=(state.sources[source]||{}).deferred?source+'暫緩':state.loadedSources[source]?source+'已載入':'正在等待 '+source+' 快照…';
-        render();
-      }
-    });
+    if(!state.loadedSources[source]){
+      count.textContent='正在讀取 '+source;
+      note.textContent='';
+      rowsEl.innerHTML='<div class="wb-empty" role="status">正在讀取已保存快照…</div>';
+    }
+    fetchWorkbenchSource(source, !!forceRefresh);
   }
 
   function preloadSource(source){ return fetchWorkbenchSource(source); }
@@ -51360,85 +51373,21 @@ function bindFactors(){
   }
 
   function load(){
-    status.textContent='正在載入黑馬快照…';
-    rowsEl.innerHTML='<div class="wb-skeleton" style="height:130px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div><div class="wb-skeleton" style="height:90px;margin:12px;border-radius:12px"></div>';
-
     var target=initialTab;
-    if(target==='短線'){state.source='短線';render();finishWorkbenchLoad('短線按需載入');if(window.stockBotFinishPageLoading)window.stockBotFinishPageLoading();initialTab='';return;}
-    if(target==='ETF')state.assetMode='etf';
-    if(target==='策略研究')state.assetMode='lab';
-    if(target&&target!=='ETF'&&target!=='策略研究'&&sources().indexOf(target)>=0)state.source=target;
-    if(target==='策略研究'){state.source='策略研究';render();initialTab='';return;}
-
-    // 先載入預設黑馬；若使用者指定其他來源進入，該來源也立即啟動。
-    // 剩餘快照排隊載入，避免同時送出 5 個來源＋成效請求。
-    var loadViewEpoch = state.viewEpoch||0;
-    var blackHorse = fetchWorkbenchSource('黑馬');
-    var targetSourcePromise = null;
-    if(target && target!=='黑馬' && workbenchSources.indexOf(target)>=0){
-      targetSourcePromise = fetchWorkbenchSource(target);
-      targetSourcePromise.then(function(){
-        if(target && target!=='黑馬'){
-          state.source=target;
-          state.assetMode=(target==='ETF'?'etf':'stock');
-          initialTab='';
-          if(state.source===target && loadViewEpoch===(state.viewEpoch||0) && !state.detailOpen && !state.closingDrawer)render();
-        }
-      });
+    initialTab='';
+    if(target==='策略研究'){
+      state.assetMode='lab';state.source=target;render();
+      if(window.stockBotFinishPageLoading)window.stockBotFinishPageLoading();
+      return;
     }
-    // V253：初次進入只載入黑馬主畫面；其他來源與成效資料一律按需載入。
-    // 這避免離開選股台後，尚未完成的背景 API 持續佔用 Render worker／DB 連線。
-
-    blackHorse.then(function(data){
-      if(state.source==='短線'){renderTabs();finishWorkbenchLoad('短線按需載入');if(window.stockBotFinishPageLoading)window.stockBotFinishPageLoading();return;}
-      // 無論黑馬快照成功、失敗或逾時，都必須解除全頁 loading。
-      // 以前這裡在 data=null 時直接 return，會造成「選股台一直進不去」。
-      if(!data){
-        state.marketOpen=false;
-        state.source='黑馬';
-        state.assetMode='stock';
-        status.textContent='黑馬快照目前無法載入，已開啟選股台；可稍後按「重新整理」。';
-        note.textContent='最近黑馬快照暫時無法取得，其他資料來源仍可使用。';
-        rowsEl.innerHTML='<div class="wb-empty"><b>黑馬快照暫時無法載入</b><small>可能是資料庫或快照服務短暫延遲；不影響其他選股分頁。</small></div>';
-        renderTabs();
-        if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer) render();
-        if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
-        initialTab='';
-        return;
-      }
-      state.marketOpen=!!(data.meta&&(data.meta.market_open||data.meta.intraday));
-      ensureWorkbenchRankingRefresh();
-      state.source='黑馬';
-      state.assetMode='stock';
-      status.textContent='黑馬快照已載入；其他分頁按需讀取。';
-      renderTabs();
-      /* v197：這裡才是黑馬「按 X 後又整份清單重跑」的真正來源。
-         load() 啟動時記住 loadViewEpoch；如果使用者期間已進入/關閉個股詳情，
-         closeDrawer() 會遞增 state.viewEpoch。舊 Promise 完成後禁止再 render。 */
-      if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer){
-        render();
-      }
-      if(window.stockBotFinishPageLoading) window.stockBotFinishPageLoading();
-      if(state.marketOpen && !state.timer){
-        updateQuotes();
-        state.timer=setInterval(updateQuotes,15000);
-      }
-      // 若是指定分頁進入，黑馬先出現，指定分頁的快照完成後會自動切過去。
-      if(target && target!=='黑馬' && target!=='成效' && target!=='我的排行' && target!=='策略研究'){
-        state.source=target;
-        if(target==='ETF')state.assetMode='etf';
-        if(loadViewEpoch===(state.viewEpoch||0)&&!state.detailOpen&&!state.closingDrawer) render();
-      }
-      initialTab='';
-    });
-
-    // 指定來源的請求已在上方優先啟動；其餘來源由背景佇列逐一補齊。
-    // 這裡刻意不再 forEach 全部來源，避免重複啟動多個慢 API。
-    if(targetSourcePromise){
-      targetSourcePromise.catch(function(){});
+    if(target==='短線'||target==='成效'||target==='我的排行'){
+      state.assetMode='stock';state.source=target;render();
+      finishWorkbenchLoad('已開啟');
+      if(window.stockBotFinishPageLoading)window.stockBotFinishPageLoading();
+      return;
     }
+    loadSource(workbenchSources.indexOf(target)>=0?target:'黑馬',false);
   }
-  document.getElementById('wb-asset-tabs').onclick=function(e){var b=e.target.closest('button[data-asset]');if(!b)return;state.assetMode=b.dataset.asset;state.source=state.assetMode==='etf'?'ETF':(state.assetMode==='lab'?'策略研究':'黑馬');state.query='';render();if(state.assetMode!=='lab')loadSource(state.source);};document.getElementById('wb-search').addEventListener('input',function(e){state.query=e.target.value;render();});document.getElementById('wb-filter').onclick=function(){state.filterOpen=!state.filterOpen;var p=document.getElementById('wb-filter-panel');p.hidden=!state.filterOpen;this.setAttribute('aria-expanded',String(state.filterOpen));};document.getElementById('wb-refresh').onclick=function(){if(state.assetMode==='lab'){loadStrategyLab(true);}else if(state.source==='成效'){state.reviewPollCount=0;requestReview(true);}else{var source=state.source||'黑馬';status.textContent='正在重新讀取 '+source+' 最新快照…';loadSource(source,true);}};document.getElementById('wb-lab-refresh').onclick=function(){loadStrategyLab(true);};tabs.onclick=function(e){var b=e.target.closest('button[data-source]');if(b){state.source=b.dataset.source;render();/* 雷達定時快照會在 Cron 更新；每次切入都重新讀取已保存快照，不沿用舊的 loadedSources。 */loadSource(state.source,state.source==='雷達');}};document.getElementById('wb-filter-panel').onclick=function(e){var b=e.target.closest('button');if(!b)return;if(b.dataset.kind){state.kind=b.dataset.kind;document.querySelectorAll('[data-kind]').forEach(function(x){x.classList.toggle('on',x===b)});}if(b.dataset.dir){state.dir=b.dataset.dir;document.querySelectorAll('[data-dir]').forEach(function(x){x.classList.toggle('on',x===b)});}render();};function setSort(b){if(!b)return;state.desc=state.sort===b.dataset.sort?!state.desc:true;state.sort=b.dataset.sort;document.querySelectorAll('[data-sort]').forEach(function(x){x.classList.toggle('on',x.dataset.sort===state.sort)});render();}document.querySelector('.wb-head').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};document.getElementById('wb-mobile-sort').onclick=function(e){setSort(e.target.closest('button[data-sort]'));};rowsEl.onclick=function(e){var b=e.target.closest('.wb-row');if(!b)return;var row=b.dataset.rowKey?state.rows.find(function(x){return x.row_key===b.dataset.rowKey}):state.rows.find(function(x){return x.code===b.dataset.code&&x.source===b.dataset.source});if(row)showDetail(row);};
   // 點擊保險：即使 rowsEl 被其他重新渲染／事件處理影響，仍由捕獲階段直接開啟詳情。
   document.addEventListener('click',function(e){
     var b=e.target&&e.target.closest?e.target.closest('#wb-rows .wb-row'):null;
