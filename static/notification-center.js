@@ -42,6 +42,7 @@
   function markOpened() {
     const center = document.querySelector('#app-page-content .notice-center[data-notice-ids]');
     if (center) {
+      window.finishPageNavLoader?.();
       const visibleCards = center.querySelectorAll('[data-notice-panel]:not([hidden]) [data-notice-id]');
       const openIds = Array.from(visibleCards, card => card.dataset.noticeId).filter(Boolean);
       updateBell(fromElement(center), openIds);
@@ -58,6 +59,7 @@
 
   document.addEventListener('DOMContentLoaded', markOpened);
   document.addEventListener('stockbot:pagecontentready', markOpened);
+  window.addEventListener('pageshow', markOpened);
   window.addEventListener('storage', event => {
     if (event.key?.startsWith('stockbot-notices-seen:')) updateBell(latestIds);
   });

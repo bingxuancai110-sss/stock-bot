@@ -291,6 +291,11 @@ html body#stockbot-app #stockbot-shell > .wrap > .app-header > .app-header-actio
 """
 
 CENTER_CSS = """
+/* The rendered feed also arrives in app shells opened before a deployment.
+   Suppress the shell's page overlays while the user is reading this feed. */
+html body#stockbot-app:has(#app-page-content .notice-center) :is(#page-nav-loader,#page-nav-progress-card){
+  display:none!important
+}
 .notice-center{max-width:720px;margin:0 auto;color:var(--ui-ink,#18374a)}
 .notice-center-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 2px}
 .notice-center-head p,.notice-center h2,.notice-center article p,.notice-center article small{
