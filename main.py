@@ -28947,6 +28947,9 @@ button:active, .btn:active, .filter-chip:active, .tab-button:active {{ filter:br
     if(u.origin!==location.origin)return;
     if(!u.pathname.startsWith('/web/'))return;
     if(u.href===location.href)return;
+    // Notification categories switch within the mounted feed. The delegated
+    // tab handler runs after this shell listener and does not navigate.
+    if(a.hasAttribute('data-notice-tab')&&window.StockBotNotifications)return;
     window.__stockAnalysisNavPending=(u.pathname==='/web/stock-analysis');
     if(a.dataset && a.dataset.appNav === '1')return; // SPA／分頁導覽由 switchAppPage 統一顯示單一頂部進度條。
     const labels={{
