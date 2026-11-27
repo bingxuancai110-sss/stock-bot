@@ -45,8 +45,12 @@
   }
   if(!cached||cached.view!==viewKey(s)||!cached.data?.meta?.date)return null;
   var data=Object.assign({},cached.data);
-  data.meta=Object.assign({},data.meta,{building:false,signals_current:false,previous_snapshot:true,error:message,position_counts:{unknown:data.meta.total}});
-  data.rows=data.rows.map(function(row){return Object.assign({},row,{current_action:'unconfirmed',position_group:'unknown',trade:null,dashboard_signal:{stage:'stale'}});});
+  var counts=data.meta.position_counts||{};
+  data.meta=Object.assign({},data.meta,{building:false,signals_current:false,previous_snapshot:true,error:message,
+   position_counts:{held:counts.held||0,closed:counts.closed||0,waiting:0,unknown:Math.max(0,(data.meta.total||0)-(counts.held||0)-(counts.closed||0))}});
+  data.meta.freshness_counts=null;
+  data.rows=data.rows.map(function(row){return Object.assign({},row,{current_action:'unconfirmed',freshness:'waiting',
+   position_group:['held','closed'].includes(row.position_group)?row.position_group:'unknown',display_quote:null,dashboard_signal:{stage:'stale'}});});
   data.notifications=[];
   return data;
  }
@@ -133,7 +137,8 @@
   if(short){scope.qualified_sectors=scope.short_qualified_sectors||{};var priceCoverage={};Object.keys(scope.price_coverage||{}).forEach(function(k){priceCoverage[k]=Object.assign({},scope.price_coverage[k],{qualified:scope.price_coverage[k].short_qualified||0});});scope.price_coverage=priceCoverage;}
   if(!m.position_counts)Object.keys(groupNames).forEach(function(g){counts[g]=rows.filter(function(r){return group(r)===g;}).length;});
   root.innerHTML='<header class="st-heading"><h2>波段機會</h2><button type="button" class="st-refresh">更新</button></header>'+
-   '<div class="st-status" role="status">'+esc(statusText(m))+'</div>'+
+   '<div class="st-status" role="status">'+esc(statusText(m))+'<span class="st-freshness-summary">'+
+   (m.intraday&&m.freshness_counts?' · 訊號已重算 '+num(m.freshness_counts.checked)+'｜已有報價 '+num(m.freshness_counts.quote_only)+'｜等行情 '+num(m.freshness_counts.waiting):'')+'</span></div>'+
    '<div class="st-direction" aria-label="策略方向">'+['long','short'].map(function(d){return '<button type="button" data-direction="'+d+'" aria-pressed="'+((s.direction||'long')===d)+'">'+(d==='short'?'放空機會':'做多機會')+'</button>';}).join('')+'</div>'+notices(s)+'<details class="st-desk-filters" '+(s.filtersOpen?'open':'')+'><summary>篩選與排序</summary><div class="st-sector" aria-label="短線產業篩選">'+['全部','電子','非電子'].map(function(v){return '<button type="button" data-sector="'+v+'" aria-pressed="'+((s.sector||'全部')===v)+'">'+v+'</button>';}).join('')+'<select class="st-shape-filter" aria-label="型態">'+(short?['','reversal','breakout','pullback','continuation']:['','reversal','breakout','pullback','continuation','repair']).map(function(k){return '<option value="'+k+'" '+((s.shape||'')===k?'selected':'')+'>'+(strategyNames[k]||'全部型態')+'</option>';}).join('')+'</select></div>'+
    '<div class="st-price-tools"><label>股價區間<select class="st-price-filter" aria-label="股價區間">'+[['all','全部股價'],['under100','低於100元'],['100to500','100至未滿500元'],['500to1000','500至未滿1000元'],['1000plus','1000元以上']].map(function(x){return '<option value="'+x[0]+'" '+((s.priceRange||'all')===x[0]?'selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></label><label>排序<select class="st-price-sort" aria-label="排序">'+[['signal','訊號優先'],['price_desc','股價由高到低'],['price_asc','股價由低到高']].map(function(x){return '<option value="'+x[0]+'" '+((s.sort||'signal')===x[0]?'selected':'')+'>'+x[1]+'</option>';}).join('')+'</select></label></div></details>'+'<div class="st-state-tabs" aria-label="進出場狀態">'+['','held','waiting','closed'].concat(counts.unknown?['unknown']:[]).map(function(g){return '<button type="button" data-position="'+g+'" aria-pressed="'+((s.position||'')===g)+'">'+(g?groupNames[g]:'全部')+(g?' <b>'+num(counts[g]||0)+'</b>':'')+'</button>';}).join('')+'</div><div class="st-list-summary">共 '+num(m.total==null?rows.length:m.total)+' 檔 · '+(s.sort==='price_desc'?'股價由高到低':s.sort==='price_asc'?'股價由低到高':'訊號優先')+'</div><div class="st-cards"></div><nav class="st-pagination" aria-label="候選分頁"><button type="button" data-page="-1" '+((m.offset||0)<=0?'disabled':'')+'>上一頁</button><span>第 '+(Math.floor((m.offset||0)/(m.limit||PAGE_SIZE))+1)+'／'+Math.max(1,Math.ceil((m.total||rows.length)/(m.limit||PAGE_SIZE)))+' 頁</span><button type="button" data-page="1" '+(!m.has_more?'disabled':'')+'>下一頁</button></nav>'+
    '<details class="st-data"><summary>更新與掃描範圍</summary><div class="st-refresh-info">'+esc((m.intraday?'獨立排程每 10 分鐘補檢，全市場分批接續':'收盤確認模式')+' · 上次完成 '+(m.generated_at?m.generated_at.slice(0,19).replace('T',' '):'尚未完成'))+'<br>'+esc(m.intraday?'下一輪約 '+(m.next_refresh_at?m.next_refresh_at.slice(11,19):'等待排程')+'；行情可能延遲，量比依開盤時間比例估算。':'盤中暫定訊號與收盤結果分開保存。')+'</div><div class="st-scope">全市場初篩 '+num(scope.universe_count||0)+' 檔 · 已詳查 '+num(scope.deep_done||m.scanned||0)+'／'+num(scope.deep_total||scope.universe_count||m.scanned||0)+' 檔'+(scope.deep_complete?'（本輪已處理完）':'（分批接續）')+'<br>'+esc(Object.keys(scope.sectors||{}).map(function(k){return k+' '+scope.sectors[k]+' 檔';}).join(' · '))+'<br>'+esc(Object.keys(scope.markets||{}).map(function(k){return k+' '+scope.markets[k]+' 檔';}).join(' · '))+'<br>技術詳查：'+esc(Object.keys(scope.deep_sectors||{}).map(function(k){return k+' '+scope.deep_sectors[k]+' 檔';}).join(' · '))+'<br>符合觀察條件：'+esc(Object.keys(scope.qualified_sectors||{}).map(function(k){return k+' '+scope.qualified_sectors[k]+' 檔';}).join(' · '))+'</div><p>行情讀取缺漏 '+num(m.failed||0)+' 檔；缺漏資料不補造訊號。</p><div class="st-price-audit"><h4>價格涵蓋範圍</h4><p>不設股價上限，不按法人買超張數排序。</p><table><thead><tr><th>股價</th><th>取得行情</th><th>技術初篩</th><th>詳查</th><th>符合觀察</th></tr></thead><tbody>'+['低於100','100–499','500–999','1000以上'].map(function(k){var c=(scope.price_coverage||{})[k]||{};return '<tr><th>'+k+'</th><td>'+num(c.quoted||0)+'</td><td>'+num(c.technical||0)+'</td><td>'+num(c.deep||0)+'</td><td>'+num(c.qualified||0)+'</td></tr>';}).join('')+'</tbody></table><details><summary>高價股逐檔檢查</summary>'+((scope.high_price_examples||[]).map(function(r){return '<p>'+esc(r.name)+' '+esc(r.code)+' · '+price(r.price)+'<br>'+esc((r.deep?'完整日K '+r.bars+' 根 · '+(r.date||'')+' · ':'')+r.reason)+'</p>';}).join('')||'<p>本輪診斷尚未完成。</p>')+'</details></div></details>'+
@@ -216,6 +221,8 @@
    rows.map(function(r){
     var g=group(r),heading='',q=r.display_quote||{},trade=r.trade||{},v=trade.spread,signal=r.dashboard_signal||{};
     var status=g==='waiting'?(r.provisional&&r.latest_event==='entry'?'暫定進場':r.signal_stage==='triggered'?'已觸發':'觀察'):groupNames[g];
+    if(r.freshness&&g==='held')status='上次場內';
+    if(r.freshness&&g==='closed')status='上次出場';
     var phase=stageLabels[signal.stage]||'',bias=biasLabels[signal.bias];
     var distance=signal.distance_pct!=null&&signal.distance_pct>=0?'距'+(short?'跌破':'突破')+' '+num(signal.distance_pct)+'%':'';
     if(!s.position&&s.sort==='signal'&&g!==previous){
@@ -227,6 +234,7 @@
      esc(r.code)+'</b><span title="'+esc(r.name)+'">'+esc(r.name)+'</span>'+(bias?'<small class="st-bias" data-bias="'+esc(signal.bias)+'">'+esc(bias)+'</small>':'')+'</button></th>'+
      '<td><span class="st-desk-state" data-state="'+esc(g)+'">'+esc(status)+'</span>'+
      (phase&&signal.stage!=='stale'?'<small class="st-phase" data-phase="'+esc(signal.stage)+'">'+esc(phase)+'</small>':'')+
+     (r.freshness?'<small class="st-phase" data-phase="stale">'+(r.freshness==='quote_only'?'有報價 · 策略待重算':'行情與策略待更新')+'</small>':'')+
      (g!=='unknown'&&r.momentum_candidate?'<small class="st-phase">'+esc(r.momentum_candidate.label)+'</small>':'')+'</td>'+
      '<td><b>'+price(q.price!=null?q.price:r.price)+'</b>'+(distance?'<small class="st-distance" title="以策略資料日價格計算">'+esc(distance)+'</small>':q.date||r.date?'<small>'+esc((q.date||r.date).slice(5).replace('-','/'))+'</small>':'')+'</td>'+
      '<td>'+price(trade.entry_price)+'</td><td>'+price(trade.exit_price)+'</td>'+
