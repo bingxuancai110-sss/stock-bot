@@ -10349,7 +10349,8 @@ def _mis_quote_is_current_for_contribution(quote, now=None, max_age_seconds=None
     return True
 
 
-def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True, quick_mode=False):
+def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache_result=True,
+                           quick_mode=False, batch_size=None, single_recovery_limit=0):
     """並行批次讀取官方 TWSE MIS 當日報價；不以歷史日K補今日漲跌。"""
     codes = list(dict.fromkeys(str(code).strip() for code in (codes or []) if code))
     if not codes or taiwan_now().weekday() >= 5:
@@ -10365,7 +10366,7 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
         # incident. Keep returning last valid quotes for 30s after a degraded
         # quick request, then try again automatically.
         failure_at = float(_TWSE_MIS_CACHE.get("failure_at") or 0)
-        if quick_mode and failure_at and now_epoch - failure_at < 30:
+        if quick_mode and not single_recovery_limit and failure_at and now_epoch - failure_at < 30:
             cached = _TWSE_MIS_CACHE.get("data") or {}
             return {c: dict(cached[c]) for c in codes
                     if c in cached and str(cached[c].get("close_date") or "").replace("-", "")[:8] == today_key}
@@ -10379,7 +10380,8 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
                 return {c: dict(valid_cached[c]) for c in codes}
 
     symbols = _twse_mis_quote_symbols(codes, market_suffix)
-    batches = [symbols[i:i + _TWSE_MIS_BATCH_SIZE] for i in range(0, len(symbols), _TWSE_MIS_BATCH_SIZE)]
+    batch_size = batch_size or _TWSE_MIS_BATCH_SIZE
+    batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
 
     def request_mis_batch(batch):
         last_exc = None
@@ -10448,7 +10450,11 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # missing daily channels individually, using the same bounded session pool.
     recovery_symbols = []
     for batch, payload, error in batch_results:
-        if error is not None or len(batch) <= 1:
+        if error is not None:
+            if single_recovery_limit and len(batch) > 1:
+                recovery_symbols.extend(batch)
+            continue
+        if len(batch) <= 1:
             continue
         live_channels = set()
         for row in (payload.get("msgArray") or []):
@@ -10466,11 +10472,13 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
     # User-facing polling must not enqueue dozens of per-symbol retries behind the
     # four MIS workers. In quick mode, return only what the bounded batch fetch found;
     # the caller keeps its last valid display when any symbols are still missing.
-    if recovery_symbols and not quick_mode:
+    if recovery_symbols and (not quick_mode or single_recovery_limit):
         with _realtime_cache_lock:
             attempts = _TWSE_MIS_CACHE.setdefault("single_attempt_at", {})
             single_batches = []
             for symbol in dict.fromkeys(recovery_symbols):
+                if single_recovery_limit and len(single_batches) >= single_recovery_limit:
+                    break
                 if time.time() - attempts.get(symbol, 0) >= 15:
                     attempts[symbol] = time.time()
                     single_batches.append([symbol])
@@ -10524,6 +10532,12 @@ def _fetch_twse_mis_quotes(codes, market_suffix=None, force_refresh=False, cache
             volume_lots = number("v")
             limit_up = number("u")
             limit_down = number("w")
+            previous_result = parsed.get(code)
+            if previous_result and previous_result.get("has_live_trade_price"):
+                if not live_close or live_close <= 0:
+                    continue
+                if str(previous_result.get("close_time") or "") > str(item.get("t") or ""):
+                    continue
             parsed[code] = {
                 "close": close, "previous_close": previous,
                 "pct": (close - previous) / previous * 100,
@@ -55824,19 +55838,18 @@ def _verify_repaired_revenue(data):
     return result
 
 
-def _short_term_display_quotes(codes, stock_meta, intraday):
+def _short_term_display_quotes(codes, stock_meta, intraday, scan=False):
     suffixes = {}
     for code in codes:
-        market = str(stock_meta[code].get("market") or "").lower()
-        if market in ("上市", "twse", "listed", "tw"):
-            suffixes[code] = ".TW"
-        elif market in ("上櫃", "上柜", "tpex", "otc", "two"):
-            suffixes[code] = ".TWO"
+        suffix = short_term_market_suffix(stock_meta[code].get("market"))
+        if suffix:
+            suffixes[code] = suffix
 
     now = taiwan_now()
     if intraday:
-        quotes = _fetch_twse_mis_quotes(codes, market_suffix=suffixes,
-                                        force_refresh=True, cache_result=False, quick_mode=True)
+        options = {"batch_size": 8, "single_recovery_limit": 6} if scan else {}
+        quotes = _fetch_twse_mis_quotes(codes, market_suffix=suffixes, force_refresh=True,
+                                        cache_result=False, quick_mode=True, **options)
     else:
         quotes = _fetch_official_daily_close_quotes(codes, market_suffix=suffixes, now=now)
     result = {}
@@ -55858,7 +55871,7 @@ def _short_term_display_quotes(codes, stock_meta, intraday):
 
 
 from notification_center import save_short_events
-from short_term import ShortTermService, create_blueprint as create_short_term_blueprint
+from short_term import ShortTermService, create_blueprint as create_short_term_blueprint, market_suffix as short_term_market_suffix
 _short_term_snapshot_store = _taiex_reduction_store(short_term=True)
 _short_term_service = ShortTermService(
     connect=_taiex_reduction_connect, store=_short_term_snapshot_store,
@@ -55866,6 +55879,8 @@ _short_term_service = ShortTermService(
     safe=_background_work_memory_safe, now=taiwan_now, calendar=is_twse_trading_day,
     memory_reserve_mb=SHORT_TERM_SCAN_RESERVE_MB,
     market_quotes=_short_term_display_quotes,
+    scan_market_quotes=lambda codes, stocks, intraday: _short_term_display_quotes(
+        codes, stocks, intraday, scan=True),
     background_slot=_web_preload_lock,
     close_batch_lease=_short_term_snapshot_store,
     save_alerts=lambda snapshot, today: save_short_events(
