@@ -49,7 +49,7 @@ html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.on,
 html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.ui-nav-pending{background:transparent!important;box-shadow:none!important}
 html body#stockbot-app .app-bottom-nav.experience-nav-ready .bottom-inner>a.on::before{display:none!important}
 .app-nav-cursor{position:absolute;z-index:0;left:0;top:0;pointer-events:none;border-radius:12px;background:var(--sb-feedback-selected,#e5eef5);box-shadow:inset 0 0 0 1px rgba(77,110,134,.08);transition:none}
-.experience-nav-ready .app-nav-cursor{transition:transform var(--app-motion) var(--app-ease),width var(--app-motion) var(--app-ease),height var(--app-motion) var(--app-ease)}
+.experience-nav-ready .app-nav-cursor{transition:none}
 @keyframes app-busy{to{transform:rotate(360deg)}}
 .experience-route-status{position:fixed;z-index:1250;bottom:calc(80px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;max-width:calc(100vw - 32px);box-sizing:border-box;padding:12px 17px;border:1px solid var(--sb-app-line,#dce5e3);border-radius:12px;background:var(--sb-app-surface,#fff);color:var(--sb-app-ink,#1d3445);font-size:14px;font-weight:650;box-shadow:0 4px 18px rgba(25,44,62,.09);pointer-events:none}
 .experience-route-status[hidden]{display:none!important}
@@ -281,7 +281,9 @@ html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bott
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a{-webkit-text-fill-color:currentColor!important;border-color:transparent!important;transition:none!important}
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.experience-nav-target:not(.on){
   color:var(--sb-app-ink,#244e69)!important;
-  background:var(--sb-feedback-selected,#e5eef5)!important;
+  background:transparent!important;
+  box-shadow:inset 0 0 0 1.5px var(--sb-feedback-border,#88a9bf)!important;
+  -webkit-text-fill-color:currentColor!important;
 }
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.ui-nav-pending::after{display:none!important}
 html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a.experience-nav-target:not(.on)::before{
@@ -295,6 +297,9 @@ html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bott
   background:currentColor;
   opacity:.55;
   pointer-events:none;
+}
+html body#stockbot-app[data-app-view] .app-bottom-nav.experience-nav-ready .bottom-inner>a:active{
+  -webkit-tap-highlight-color:transparent;filter:none!important
 }
 html body#stockbot-app #app-page-content.ui-route-pending{opacity:1!important}
 @keyframes app-shell-arrive{from{opacity:.82}to{opacity:1}}
