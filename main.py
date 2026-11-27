@@ -27048,21 +27048,20 @@ def render_page(title, body, nav_active=None, user_name=None):
                 '</svg></a>'
             )
     from notification_center import BELL, HEADER_CSS
-    notice_link = ""
     if header_user and title != "登入台股 BOT":
         notice_link = preserve_web_token(
             f'<a class="app-notice-link" href="/web/notifications" aria-label="通知台" title="通知台">{BELL}</a>')
-        header_google_button = preserve_web_token(header_google_button)
+        header_google_button = ('<div class="app-header-actions" role="group" aria-label="帳號與通知">'
+                                + preserve_web_token(header_google_button) + notice_link + '</div>')
         page_extra_css += HEADER_CSS
     # 登入入口使用自己的編輯式 masthead，不輸出登入後的共用頁首／Google 綁定鈕。
     # 以 HTML 結構移除，比只靠 CSS 隱藏更可靠，也避免舊版樣式重新顯示。
     if title == "登入台股 BOT":
         header_html = ""
     else:
-        header_html = f'''<header class="app-header{' has-notice-center' if notice_link else ''}">
+        header_html = f'''<header class="app-header">
   {page_back}
   {header_google_button}
-  {notice_link}
   <div class="eyebrow">TAIWAN STOCK BOT</div>
   <h1>{title}</h1>
   <div class="dateline">{taiwan_now().strftime('%Y / %m / %d')}
@@ -32256,25 +32255,47 @@ def web_home(uid):
 @app.route("/web/notifications")
 @web_login_required
 def web_notifications(uid):
-    from notification_center import CATEGORIES, read_events, render_center
-    category = request.args.get("kind", "short")
-    if category not in CATEGORIES:
-        category = "short"
+    from notification_center import (CATEGORIES, merge_short_history, read_events,
+                                     recover_short_history, render_center)
+    from short_term import KEY
+    category = request.args.get("kind", "all")
+    if category != "all" and category not in CATEGORIES:
+        category = "all"
+    page = max(1, request.args.get("page", 1, type=int))
+    today = taiwan_today()
+    admin = is_admin(uid)
+    allowed = [kind for kind in CATEGORIES if admin or _admin_feature_enabled(
+        "screener" if kind == "short" else kind)]
     conn = None
-    events, unavailable = [], False
+    feeds, unavailable = {}, []
+    history_ready = True
     try:
-        feature = "screener" if category == "short" else category
-        if is_admin(uid) or _admin_feature_enabled(feature):
-            conn = get_db_connection()
-            with conn.cursor() as cur:
-                events = read_events(cur, category, uid, taiwan_today())
+        conn = get_db_connection() if allowed else None
+        for kind in allowed:
+            try:
+                with conn.cursor() as cur:
+                    feeds[kind] = read_events(cur, kind, uid, today)
+            except Exception as exc:
+                conn.rollback()
+                unavailable.append(kind)
+                print(f"通知台 {kind} 讀取失敗：{type(exc).__name__}", flush=True)
     except Exception as exc:
-        unavailable = True
+        unavailable = [kind for kind in allowed if kind not in feeds]
         print(f"通知台讀取失敗：{type(exc).__name__}", flush=True)
     finally:
         if conn is not None:
             release_db_connection(conn)
-    response = make_response(respond_page("通知台", render_center(category, events, unavailable), None))
+    if "short" in allowed:
+        try:
+            recovered, history_ready = recover_short_history(
+                lambda: _short_term_snapshot_store.load(KEY, max_age_seconds=14 * 86400),
+                _background_work_memory_safe, today)
+            feeds["short"] = merge_short_history(feeds.get("short", []), recovered)
+        except Exception as exc:
+            history_ready = False
+            print(f"短線歷史通知補讀失敗：{type(exc).__name__}", flush=True)
+    response = make_response(respond_page(
+        "通知台", render_center(category, feeds, unavailable, history_ready, page), None))
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
